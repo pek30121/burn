@@ -80,9 +80,20 @@ export async function loadEngineConfig(env: Env = process.env): Promise<EngineCo
   const cluster = env.SOLANA_CLUSTER as Cluster | undefined;
   if (!cluster || !CLUSTERS.includes(cluster)) issues.push(`SOLANA_CLUSTER: expected one of ${CLUSTERS.join(', ')}`);
 
-  const rpcUrl = env.SOLANA_RPC_URL;
-  if (!rpcUrl) issues.push('SOLANA_RPC_URL: is not set');
-  else {
+  // The RPC endpoint: either an explicit URL, or just a Helius API key (the host is derived from SOLANA_CLUSTER,
+  // so a Devnet project can never be pointed at the Mainnet host by mistake). One Helius key serves every network.
+  let rpcUrl = env.SOLANA_RPC_URL;
+  const heliusKey = env.HELIUS_API_KEY;
+  if (rpcUrl && heliusKey) issues.push('SOLANA_RPC_URL and HELIUS_API_KEY are both set: use only one');
+  else if (!rpcUrl && heliusKey) {
+    if (!/^[A-Za-z0-9_-]{8,128}$/.test(heliusKey)) issues.push('HELIUS_API_KEY: unexpected format (letters, digits, "-" and "_" only)');
+    else if (cluster && CLUSTERS.includes(cluster)) {
+      registerSecret(heliusKey);
+      rpcUrl = `https://${cluster === 'devnet' ? 'devnet' : 'mainnet'}.helius-rpc.com/?api-key=${heliusKey}`;
+    }
+  }
+  if (!rpcUrl && !heliusKey) issues.push('SOLANA_RPC_URL: is not set (or set HELIUS_API_KEY)');
+  else if (rpcUrl) {
     try {
       const u = new URL(rpcUrl);
       if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error();

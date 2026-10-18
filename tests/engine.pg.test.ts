@@ -310,7 +310,8 @@ test('[engine] two engines on the same database: the second waits for the lease 
   const b2 = await boot(db, chain, hooks2);
   try {
     await waitFor(() => b2.ev('lease_held_elsewhere').length === 2, 'second engine blocked');
-    assert.equal(b2.engine.meter.snapshot().total.requests, 0, 'a blocked engine sends no RPC request');
+    const sent = Object.entries(b2.engine.meter.snapshot().projects).filter(([id]) => id !== '_startup');
+    assert.deepEqual(sent, [], 'a blocked engine sends no project RPC request (only the one-off network check at start-up)');
     assert.equal((await projectStatus(b2, 'alpha')).runner.state, 'waiting_lease');
 
     await b1.engine.stop();
@@ -330,20 +331,20 @@ test('[engine] refuses to start on a bad setup, with explicit errors that contai
   // database unreachable
   const bad = await bareSchema();
   const unreachable = await mk({ ...bad, url: 'postgres://u:Leak3dPassw0rd@127.0.0.1:1/x' });
-  const e1 = await startEngine(unreachable, { log }).catch((e) => e);
+  const e1 = await startEngine(unreachable, { log, fetch: fakeFetch(new FakeChain(), newHooks()) }).catch((e) => e);
   assert.ok(e1 instanceof EngineStartError && /not reachable/.test(e1.message), String(e1?.message));
   assert.doesNotMatch(e1.message + e1.stack, /Leak3dPassw0rd|postgres:\/\//);
 
   // schema not migrated and MIGRATE_ON_START=false
   const fresh = await bareSchema();
-  const e2 = await startEngine(await mk(fresh, { MIGRATE_ON_START: 'false' }), { log }).catch((e) => e);
+  const e2 = await startEngine(await mk(fresh, { MIGRATE_ON_START: 'false' }), { log, fetch: fakeFetch(new FakeChain(), newHooks()) }).catch((e) => e);
   assert.ok(e2 instanceof EngineStartError && /not up to date.*0001_init\.sql/.test(e2.message), String(e2?.message));
 
   // a stored project must not silently change its mint
   const db = await bareSchema();
   const ok = await startEngine(await mk(db), { log, fetch: fakeFetch(new FakeChain(), newHooks()) });
   await ok.stop();
-  const e3 = await startEngine(await mk(db, {}, [projectInput({ id: 'alpha', mint: randomPubkey() })]), { log }).catch((e) => e);
+  const e3 = await startEngine(await mk(db, {}, [projectInput({ id: 'alpha', mint: randomPubkey() })]), { log, fetch: fakeFetch(new FakeChain(), newHooks()) }).catch((e) => e);
   assert.ok(e3 instanceof EngineStartError && /different immutable settings: mint/.test(e3.message), String(e3?.message));
 });
 

@@ -13,6 +13,12 @@ export const MAX_SUPPORTED_TX_VERSION = 1;
 export const SIGNATURES_PAGE_MAX = 1000;
 const RETRYABLE_RPC_CODES = new Set([-32005]);
 
+/** Genesis hash of each cluster: proves which network an RPC endpoint really serves. */
+export const GENESIS_HASHES = {
+  devnet: 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG',
+  'mainnet-beta': '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d',
+} as const;
+
 export class RpcError extends Error {
   override name = 'RpcError';
   readonly code: number | null;
@@ -76,6 +82,13 @@ export class SolanaRpc {
     this.#maxDelayMs = o.maxDelayMs ?? 8_000;
     this.#sleep = o.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.#random = o.random ?? Math.random;
+  }
+
+  /** Genesis hash of the cluster served by the endpoint. */
+  async getGenesisHash(): Promise<string> {
+    const r = await this.#call('getGenesisHash', []);
+    if (typeof r !== 'string' || r.length < 32 || r.length > 44) throw new RpcError('getGenesisHash: malformed response');
+    return r;
   }
 
   /** Newest first, at most 1000 per call; follow with `before` = last signature of the page. */

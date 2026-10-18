@@ -3,7 +3,7 @@
  * isolated: each has its own RPC client, indexer, cursor and failure/backoff state. */
 
 import { createApiServer, type ApiServer } from '../api/http.ts';
-import { SolanaRpc } from '../chain/rpc.ts';
+import { GENESIS_HASHES, RpcError, SolanaRpc } from '../chain/rpc.ts';
 import { createPool } from '../db/config.ts';
 import { migrationStatus, runMigrations } from '../db/migrate.ts';
 import { toStoreError } from '../db/errors.ts';
@@ -64,6 +64,25 @@ export async function startEngine(cfg: EngineConfig, deps: EngineDeps): Promise<
     maxConcurrent: cfg.limits.maxConcurrent, minIntervalMs: cfg.limits.minIntervalMs, trackConfirmed: cfg.indexer.trackConfirmed,
   });
 
+  const limiter = new RequestLimiter(cfg.limits);
+  const meter = new RpcMeter(cfg.creditCosts);
+  const baseFetch = deps.fetch ?? fetch;
+
+  // --- the RPC endpoint must serve the configured cluster (checked first: nothing else is touched if it does not) ---
+  try {
+    // counted like every other request (under the pseudo-project "_startup"): the meter must match what the provider receives
+    const probe = new SolanaRpc({ url: cfg.rpc.url, fetch: meteredFetch({ base: baseFetch, project: '_startup', meter, limiter }), maxRetries: 1, timeoutMs: cfg.rpc.timeoutMs, baseDelayMs: cfg.rpc.baseDelayMs });
+    const genesis = await probe.getGenesisHash();
+    if (genesis !== GENESIS_HASHES[cfg.cluster]) {
+      throw new EngineStartError(`the RPC endpoint does not serve ${cfg.cluster} (genesis hash mismatch): check SOLANA_CLUSTER and the endpoint/API key`);
+    }
+  } catch (e) {
+    if (e instanceof EngineStartError) throw e;
+    const code = e instanceof RpcError ? e.message : 'request failed';
+    const hint = /HTTP 40[13]/.test(code) ? ' — the provider refused the credentials: check the API key' : '';
+    throw new EngineStartError(`cannot verify the RPC endpoint (${code})${hint}`);
+  }
+
   // --- PostgreSQL: reachable, migrated, projects consistent with the stored ones ---
   const pool = createPool(cfg.db, { log: (m) => log.warn('db_idle_error', { message: m }) });
   let store: PgStore;
@@ -90,9 +109,6 @@ export async function startEngine(cfg: EngineConfig, deps: EngineDeps): Promise<
 
   // --- shared infrastructure ---
   const abort = new AbortController();
-  const limiter = new RequestLimiter(cfg.limits);
-  const meter = new RpcMeter(cfg.creditCosts);
-  const baseFetch = deps.fetch ?? fetch;
   const sleep = (ms: number) =>
     new Promise<void>((resolve, reject) => {
       if (abort.signal.aborted) return reject(new ShutdownError());

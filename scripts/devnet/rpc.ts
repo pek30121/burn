@@ -2,7 +2,10 @@
 import { encodeBase58 } from '../../src/core/base58.ts';
 
 export const DEVNET_GENESIS = 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG';
-export const RPC_URL = process.env.DEVNET_RPC_URL ?? 'https://api.devnet.solana.com';
+// Endpoint: DEVNET_RPC_URL (any provider), else HELIUS_API_KEY (one Helius key serves every network; this builds the
+// Devnet host), else the public Devnet RPC. The URL contains the key: it is never printed (see describeRpc()).
+export const RPC_URL = process.env.DEVNET_RPC_URL ?? (process.env.HELIUS_API_KEY ? `https://devnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}` : 'https://api.devnet.solana.com');
+export const describeRpc = (): string => (process.env.DEVNET_RPC_URL ? 'custom endpoint (DEVNET_RPC_URL)' : process.env.HELIUS_API_KEY ? 'Helius Devnet (devnet.helius-rpc.com)' : 'public Devnet RPC (api.devnet.solana.com)');
 export const LAMPORTS_PER_SOL = 1_000_000_000n;
 
 export class RpcFailure extends Error {

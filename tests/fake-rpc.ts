@@ -16,6 +16,8 @@ export interface RpcHooks {
   fail?: (r: SeenRequest) => number | null;
   /** Awaited before answering (use it to hold a request in flight). */
   hold?: (r: SeenRequest) => Promise<void> | void;
+  /** Genesis hash answered by getGenesisHash (default: Devnet). */
+  genesis?: string;
 }
 
 export const newHooks = (): RpcHooks => ({ requests: [] });
@@ -30,6 +32,8 @@ export async function handleRpc(chain: FakeChain, hooks: RpcHooks, raw: string):
   const ok = (result: unknown) => ({ status: 200, body: JSON.stringify({ jsonrpc: '2.0', id: req.id, result }) });
   try {
     switch (req.method) {
+      case 'getGenesisHash':
+        return ok(hooks.genesis ?? 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG');
       case 'getSignaturesForAddress':
         return ok(await chain.getSignaturesForAddress(req.params[0], req.params[1]));
       case 'getTransaction':

@@ -14,10 +14,17 @@ The private key stays in `.devnet/wallet.json`. It is never printed, logged or c
 |---|---|---|
 | `npm run devnet:observe` | no | the whole engine (real RPC client, PostgreSQL, indexers, REST, SSE) on **real burns made by others** (one direct, one by CPI): exact amounts, finalized-only indexing, persistence, SSE = REST, `Last-Event-ID`, restart without loss, RPC outage (local pass-through proxy, real data behind it) |
 | `npm run devnet:simulate` | no (nothing is sent) | our token instructions (create, mint, `Burn`, `BurnChecked`, revoke) run on the **real Devnet runtime** via `simulateTransaction`: exact supply arithmetic, authority revoked, runtime rejects wrong decimals / over-burn / mint after revoke |
+| `npm run devnet:rpc-check` | no | real read-only requests against the configured RPC (Helius when `HELIUS_API_KEY` is set) |
 | `npm run devnet:probe` | yes | focused experiment: how the engine's status evolves between `confirmed` and `finalized` for one real burn |
 | `npm run devnet:e2e` | **yes** | our own real transactions end to end: tokens created, burns below / across / over several thresholds, one tx with two burns, burn while the engine is down, RPC outage, restarts, no mutation before finalization, supply reconciliation proving completeness, SSE reconnection |
 
 `devnet:e2e` prints every transaction signature (all FINALIZED) and writes `.devnet/results/*.json`.
+
+## Using Helius for Devnet (from the Helius documentation)
+* **One API key serves every network.** The dashboard's RPC page may list only Mainnet URLs; the Devnet endpoint is the same URL with the `devnet` host: `https://devnet.helius-rpc.com/?api-key=YOUR_API_KEY` (documented at <https://www.helius.dev/docs/llms.txt>; WebSocket: `wss://devnet.helius-rpc.com/?api-key=…`). Nothing has to be enabled on the dashboard.
+* **Engine:** set `SOLANA_CLUSTER=devnet` and `HELIUS_API_KEY` (and leave `SOLANA_RPC_URL` unset). The host is derived from the cluster, and at start-up the engine verifies the genesis hash, so a Devnet engine can never run against Mainnet by mistake.
+* **Where the key goes:** in the hosting environment's secrets (cloud environment menu → Edit → *Network secrets* or an environment variable named `HELIUS_API_KEY`), **never in Git, `.env.example` or the chat**. A new session picks it up.
+* **Check it:** `npm run devnet:rpc-check` makes real read-only requests (network, health, history, decoding of a real burn, latency, throttling) and never prints the key. The scenario scripts (`devnet:e2e`, `devnet:observe`, …) use the same variable automatically.
 
 ## Funding the wallet
 The sandbox's own faucet calls (`requestAirdrop`) are refused (HTTP 429, the address of the sandbox is shared). Fund the **public** address from your own session at <https://faucet.solana.com> (0.5 SOL was used for the validated run; about 0.015 SOL is spent per run). The faucet page also documents a proof-of-work faucet (`devnet-pow`); we read its source: the reward goes to the *payer*, which still needs a few thousand lamports for the first transaction fee (a payer with 0 lamports cannot send anything), so it cannot bootstrap an empty wallet. It was not needed and is not part of this repository.

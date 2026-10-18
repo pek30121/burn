@@ -18,7 +18,8 @@
     "devnet:e2e": "node scripts/devnet/e2e.ts",
     "devnet:observe": "node scripts/devnet/observe-existing.ts",
     "devnet:simulate": "node scripts/devnet/simulate.ts",
-    "devnet:probe": "node scripts/devnet/probe-confirmed.ts"
+    "devnet:probe": "node scripts/devnet/probe-confirmed.ts",
+    "devnet:rpc-check": "node scripts/devnet/rpc-check.ts"
   },
   "devDependencies": {
     "@types/node": "22.20.5",
