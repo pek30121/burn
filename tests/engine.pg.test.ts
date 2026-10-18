@@ -190,7 +190,7 @@ test('[engine] only finalized data triggers a mutation: confirmed burns wait for
   chain.finalizedSlot = 1;
   chain.add({ slot: 5, burns: [L1] }); // crosses level l1, but only confirmed so far
   const called: string[] = [];
-  const b = await boot(db, chain, newHooks(), { over: { indexer: { pageSize: 3, backfillPagesPerSync: 5, trackConfirmed: true, maxTailPages: 100 } }, handler: (e) => void called.push(e.level.id) });
+  const b = await boot(db, chain, newHooks(), { over: { indexer: { pageSize: 3, backfillPagesPerSync: 5, trackConfirmed: true, batchFetch: false, maxTailPages: 100 } }, handler: (e) => void called.push(e.level.id) });
   try {
     await waitFor(async () => (await projectStatus(b, 'alpha')).indexer!.totals.confirmedRaw === L1, 'confirmed burn seen');
     await sleep(150);
@@ -488,5 +488,105 @@ test('[main] a SIGTERM that arrives while the engine is still starting still end
     assert.equal(p.lines().find((l) => l.event === 'engine_stopped').clean, true);
   } finally {
     await server.close();
+  }
+});
+
+/* ------------------------------ H2: tokenProgram vs the real on-chain owner ------------------------------ */
+
+test('[engine][H2] a project whose tokenProgram is not the mint\'s real owner stops the start with an explicit error; nothing is indexed', opts, async () => {
+  const db = await bareSchema();
+  const hooks = newHooks();
+  hooks.owners = { [MINT_A]: 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb' }; // alpha says spl-token, the chain says token-2022
+  const err = await boot(db, chainWith(4, 4), hooks).catch((e) => e);
+  assert.ok(err instanceof EngineStartError);
+  assert.match(err.message, /project "alpha": tokenProgram is "spl-token" but the mint is owned on-chain by "token-2022"/);
+  assert.doesNotMatch(err.message, /project "beta"/);
+  assert.doesNotMatch(err.message + err.stack, new RegExp(RPC_SECRET));
+  assert.equal(count(hooks, 'getSignaturesForAddress'), 0);
+  assert.equal(count(hooks, 'getTransaction'), 0);
+});
+
+test('[engine][H2] several offending projects are all listed; a missing mint is refused too', opts, async () => {
+  const db = await bareSchema();
+  const hooks = newHooks();
+  hooks.owners = { [MINT_A]: 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb', [MINT_B]: null };
+  const err = await boot(db, chainWith(2, 2), hooks).catch((e) => e);
+  assert.ok(err instanceof EngineStartError);
+  assert.match(err.message, /project "alpha"/);
+  assert.match(err.message, /project "beta": the mint .* does not exist/);
+});
+
+test('[engine][H2] a Token-2022 project on a Token-2022 mint starts normally (right program on both sides)', opts, async () => {
+  const db = await bareSchema();
+  const hooks = newHooks();
+  hooks.owners = { [MINT_A]: 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb' };
+  const b = await boot(db, chainWith(0, 0), hooks, { projects: [projectInput({ id: 'alpha', tokenProgram: 'token-2022' })] });
+  await b.engine.stop();
+});
+
+test('[engine][H2] a transient RPC failure of the check does not refuse the engine: that project waits (explicitly failing), the others index, then it verifies and indexes', opts, async () => {
+  const db = await bareSchema();
+  const hooks = newHooks();
+  let betaDown = true;
+  hooks.fail = (r) => (betaDown && r.method === 'getAccountInfo' && r.address === MINT_B ? 500 : null);
+  const b = await boot(db, chainWith(6, 4), hooks);
+  try {
+    await waitFor(async () => (await settled(b, 'alpha')) && (await burnedRaw(b, 'alpha')) === 600n, 'alpha indexed');
+    await sleep(150);
+    assert.equal(count(hooks, 'getSignaturesForAddress', MINT_B), 0, 'beta indexes nothing before its mint is verified');
+    const beta = await projectStatus(b, 'beta');
+    assert.ok(beta.runner.consecutiveFailures > 0);
+    assert.match(beta.runner.lastError ?? '', /getAccountInfo: HTTP 500/);
+    betaDown = false;
+    await waitFor(async () => (await settled(b, 'beta')) && (await burnedRaw(b, 'beta')) === 28n, 'beta verified then indexed');
+    assert.equal(b.ev('mint_program_verified', 'beta').length, 1);
+    assert.equal((await projectStatus(b, 'beta')).runner.consecutiveFailures, 0);
+  } finally {
+    await b.engine.stop();
+  }
+});
+
+test('[engine][H2] the deferred check can still find a definitive mismatch: the project never indexes and says why', opts, async () => {
+  const db = await bareSchema();
+  const hooks = newHooks();
+  let failures = 0; // the start-up probe retries once: fail both of its attempts, then answer
+  hooks.fail = (r) => (failures < 2 && r.method === 'getAccountInfo' && r.address === MINT_B ? (failures++, 500) : null);
+  hooks.owners = { [MINT_B]: 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb' };
+  const b = await boot(db, chainWith(3, 3), hooks);
+  try {
+    await waitFor(async () => ((await projectStatus(b, 'beta')).runner.lastError ?? '').includes('owned on-chain by "token-2022"'), 'mismatch reported by the runner');
+    assert.equal(count(hooks, 'getSignaturesForAddress', MINT_B), 0);
+    assert.equal(await burnedRaw(b, 'beta'), 0n);
+  } finally {
+    await b.engine.stop();
+  }
+});
+
+/* ------------------------------ consumption watch wired into the engine ------------------------------ */
+
+test('[engine][quota] a tiny quota raises ONE critical alert, status exposes the estimate and the fetch statistics; no secret leaks', opts, async () => {
+  const db = await bareSchema();
+  const hooks = newHooks();
+  const b = await boot(db, chainWith(6, 3), hooks, { over: { rpcMonthlyCredits: 5, quotaCheckIntervalMs: 20 } });
+  try {
+    await waitFor(async () => (await settled(b, 'alpha')) && (await settled(b, 'beta')), 'indexed');
+    await waitFor(() => b.ev('rpc_quota').length >= 1, 'quota alert');
+    await sleep(120);
+    const alerts = b.ev('rpc_quota');
+    assert.equal(alerts.length, 1, 'one alert per level change, not one per check');
+    assert.equal(alerts[0].level, 'error');
+    const st = await b.engine.status();
+    assert.equal(st.quota?.level, 'critical');
+    assert.equal(st.quota?.monthlyCredits, 5);
+    assert.ok(st.projects.every((p) => p.fetch && p.fetch.bulkRequests === 0 && p.fetch.bulkDisabled === false), 'bulk off for a non-Helius endpoint');
+    assert.doesNotMatch(JSON.stringify(b.lines), new RegExp(RPC_SECRET));
+  } finally {
+    await b.engine.stop();
+  }
+  const none = await boot(await bareSchema(), chainWith(2, 0), newHooks());
+  try {
+    assert.equal((await none.engine.status()).quota, undefined, 'no watch unless RPC_MONTHLY_CREDITS is set');
+  } finally {
+    await none.engine.stop();
   }
 });

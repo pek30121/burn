@@ -1,7 +1,7 @@
 /* In-memory Solana node for indexer tests: serves getSignaturesForAddress /
  * getTransaction / getTokenSupply with real paging semantics, commitments and
  * fault injection. Transactions are real-shaped getTransaction responses. */
-import { RpcError, RpcUnsupportedVersionError, type SignatureInfo } from '../src/chain/rpc.ts';
+import { RpcError, RpcUnsupportedVersionError, type BatchPage, type BatchQuery, type SignatureInfo } from '../src/chain/rpc.ts';
 import { K, baseKeys, burnIx, makeTx, rawData } from './chain-helpers.ts';
 import { MINT_A, MINT_B, randomSignature } from './helpers.ts';
 import type { Commitment } from '../src/core/ledger.ts';
@@ -40,6 +40,25 @@ export class FakeChain {
   /** Let `skip` calls through, then fail the next `times` calls with a non-retryable RPC error. */
   txFault: { skip: number; times: number } | null = null;
   sigsFault: { skip: number; times: number } | null = null;
+
+  /* ---- bulk transport (Helius getTransactionsForAddress) ---- */
+  bulkCalls = 0;
+  /** Absent from the bulk answer (the node "forgets" them); the individual call still has them. */
+  bulkOmit = new Set<string>();
+  /** Answered with a body that is not a transaction. */
+  bulkGarbage = new Set<string>();
+  /** Answered without inner instructions (CPI burns could not be ruled out). */
+  bulkNoInner = new Set<string>();
+  /** Answered with the response of ANOTHER transaction under this signature's entry. */
+  bulkSwap = new Map<string, string>();
+  /** Reported as "failed" by the bulk answer although the listing said it succeeded. */
+  bulkFailed = new Set<string>();
+  /** Throw this on every bulk call (e.g. a non-retryable RpcError = method not available on the plan). */
+  bulkError: Error | null = null;
+  /** Fail only the calls numbered skip+1 .. skip+times. */
+  bulkFault: { skip: number; times: number; error: Error } | null = null;
+  /** Items per bulk page (the real limit is 1000; small values exercise pagination). */
+  bulkPageSize = 1000;
 
   add(o: AddOpts): string {
     const sig = randomSignature();
@@ -96,6 +115,27 @@ export class FakeChain {
     const t = this.txs.find((x) => x.sig === sig);
     if (!t || this.nullFor.has(sig) || !this.#visible(t, commitment)) return null;
     return t.response;
+  }
+
+  async getTransactionsForAddress(address: string, q: BatchQuery): Promise<BatchPage> {
+    this.bulkCalls++;
+    if (this.bulkError) throw this.bulkError;
+    if (this.bulkFault && this.bulkCalls > this.bulkFault.skip && this.bulkCalls <= this.bulkFault.skip + this.bulkFault.times) throw this.bulkFault.error;
+    const all = this.txs.filter((t) => t.mints.includes(address) && !t.hidden && t.err === null && t.slot <= this.finalizedSlot && t.slot >= q.slotGte && t.slot <= q.slotLte).reverse();
+    const start = q.paginationToken === undefined ? 0 : Number(q.paginationToken);
+    const size = Math.min(q.limit ?? 1000, this.bulkPageSize);
+    const page = all.slice(start, start + size);
+    const transactions: BatchPage['transactions'] = [];
+    for (const t of page) {
+      if (this.bulkOmit.has(t.sig)) continue;
+      if (this.bulkGarbage.has(t.sig)) continue; // an entry that is not a transaction is skipped by the client
+      let response: any = this.bulkSwap.has(t.sig) ? this.txs.find((x) => x.sig === this.bulkSwap.get(t.sig))!.response : t.response;
+      if (this.bulkNoInner.has(t.sig)) response = { ...response, meta: { ...response.meta, innerInstructions: undefined } };
+      if (this.bulkFailed.has(t.sig)) response = { ...response, meta: { ...response.meta, err: { InstructionError: [0, 'Custom'] } } };
+      transactions.push({ signature: t.sig, response });
+    }
+    const next = start + size;
+    return { transactions, returned: page.length, paginationToken: next < all.length ? String(next) : null };
   }
 
   async getTokenSupply(_mint: string, _commitment: Commitment): Promise<{ amountRaw: bigint; decimals: number }> {

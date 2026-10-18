@@ -27,6 +27,8 @@ export interface RunnerOptions {
   readonly leaseRetryMs: number;
   /** 0 = never. Otherwise, how often a caught-up project is checked against the on-chain supply (needs initialSupply). */
   readonly reconcileIntervalMs?: number;
+  /** Checked (and retried with backoff) before the first sync; once it succeeds it is not run again. */
+  readonly preflight?: () => Promise<void>;
   readonly sleep: (ms: number) => Promise<void>;
   readonly random?: () => number;
   readonly now?: () => Date;
@@ -52,6 +54,7 @@ export class ProjectRunner {
   #seenIssues: Set<string> | null = null;
   #lastReconcile = Number.NEGATIVE_INFINITY;
   #lastVerification = '';
+  #preflightDone = false;
 
   constructor(o: RunnerOptions) {
     this.#o = o;
@@ -82,6 +85,10 @@ export class ProjectRunner {
             log.info('lease_acquired');
           }
           this.#state = 'syncing';
+          if (!this.#preflightDone && this.#o.preflight) {
+            await this.#o.preflight(); // throws -> backoff, and nothing is indexed meanwhile
+            this.#preflightDone = true;
+          }
           const res = await this.#o.indexer.syncOnce();
           await this.#logActivity(res); // burns recorded by a sync that stopped early (error, shutdown) are still reported
           if (signal.aborted) break;

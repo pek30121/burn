@@ -12,6 +12,11 @@ interface Counts {
   rateLimited: number;
 }
 const zero = (): Counts => ({ requests: 0, errors: 0, rateLimited: 0 });
+/** Requests whose cost depends on what they returned (credits recorded per request, not a flat per-method cost). */
+interface Variable {
+  requests: number;
+  credits: number;
+}
 
 export interface MeterSnapshot {
   note: string;
@@ -24,13 +29,23 @@ export class RpcMeter {
   readonly #costs: Readonly<Record<string, number>>;
   readonly #since: string;
   readonly #byProject = new Map<string, Map<string, Counts>>();
+  readonly #variable = new Map<string, Map<string, Variable>>();
 
   constructor(costs: Readonly<Record<string, number>>, now: () => Date = () => new Date()) {
     this.#costs = costs;
     this.#since = now().toISOString();
   }
 
-  record(project: string, method: string, outcome: Outcome): void {
+  /** `credits` = this request's own estimated cost (Helius bills `getTransactionsForAddress` per transaction returned). */
+  record(project: string, method: string, outcome: Outcome, credits?: number): void {
+    if (credits !== undefined) {
+      let vm = this.#variable.get(project);
+      if (!vm) this.#variable.set(project, (vm = new Map()));
+      const v = vm.get(method) ?? { requests: 0, credits: 0 };
+      v.requests++;
+      v.credits += credits;
+      vm.set(method, v);
+    }
     let methods = this.#byProject.get(project);
     if (!methods) this.#byProject.set(project, (methods = new Map()));
     let c = methods.get(method);
@@ -50,7 +65,8 @@ export class RpcMeter {
         p.requests += c.requests;
         p.errors += c.errors;
         p.rateLimited += c.rateLimited;
-        p.estimatedCredits += c.requests * (this.#costs[m] ?? 1);
+        const v = this.#variable.get(id)?.get(m);
+        p.estimatedCredits += (c.requests - (v?.requests ?? 0)) * (this.#costs[m] ?? 1) + (v?.credits ?? 0);
       }
       projects[id] = p;
       total.requests += p.requests;
@@ -79,13 +95,26 @@ function methodOf(init?: RequestInit): string {
   return 'unknown';
 }
 
+/** Helius: 10 credits per 100 transactions returned (rounded up), 10 minimum. Read from a clone; the caller's body is untouched. */
+async function bulkCredits(res: Response): Promise<number | undefined> {
+  try {
+    const body = (await res.clone().json()) as { result?: { data?: unknown[] }; error?: unknown };
+    if (body.error) return 0; // failed responses are not billed
+    const n = Array.isArray(body.result?.data) ? body.result.data.length : 0;
+    return Math.max(10, Math.ceil(n / 100) * 10);
+  } catch {
+    return undefined; // unreadable: fall back to the flat per-method floor
+  }
+}
+
 export function meteredFetch(o: { base: typeof fetch; project: string; meter: RpcMeter; limiter: RequestLimiter }): typeof fetch {
   return (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     const release = await o.limiter.acquire(); // throws ShutdownError once draining
     const method = methodOf(init);
     try {
       const res = await o.base(input, init);
-      o.meter.record(o.project, method, res.status === 429 ? 'rate_limited' : res.ok ? 'ok' : 'error');
+      const outcome = res.status === 429 ? 'rate_limited' : res.ok ? 'ok' : 'error';
+      o.meter.record(o.project, method, outcome, method === 'getTransactionsForAddress' && res.ok ? await bulkCredits(res) : undefined);
       return res;
     } catch (e) {
       o.meter.record(o.project, method, 'error');

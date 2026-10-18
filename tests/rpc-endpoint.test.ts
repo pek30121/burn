@@ -69,7 +69,7 @@ test('once configured, the key and the URL are masked in every log line and erro
 const log = createLogger({ write: () => {} });
 const answer = (genesis: string): typeof fetch => (async (_u: unknown, init?: RequestInit) => {
   const { id, method } = JSON.parse(init!.body as string);
-  return new Response(JSON.stringify({ jsonrpc: '2.0', id, result: method === 'getGenesisHash' ? genesis : null }), { status: 200 });
+  return new Response(JSON.stringify({ jsonrpc: '2.0', id, result: method === 'getGenesisHash' ? genesis : method === 'getAccountInfo' ? { value: { owner: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' } } : null }), { status: 200 });
 }) as typeof fetch;
 
 test('guard: an endpoint on another cluster (e.g. Mainnet) is refused before anything else is touched', async () => {

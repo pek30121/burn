@@ -18,6 +18,8 @@ export interface RpcHooks {
   hold?: (r: SeenRequest) => Promise<void> | void;
   /** Genesis hash answered by getGenesisHash (default: Devnet). */
   genesis?: string;
+  /** Owner program answered by getAccountInfo, per address (null = the account does not exist). Default: the SPL Token program. */
+  owners?: Record<string, string | null>;
 }
 
 export const newHooks = (): RpcHooks => ({ requests: [] });
@@ -34,6 +36,10 @@ export async function handleRpc(chain: FakeChain, hooks: RpcHooks, raw: string):
     switch (req.method) {
       case 'getGenesisHash':
         return ok(hooks.genesis ?? 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG');
+      case 'getAccountInfo': {
+        const owner = hooks.owners && req.params[0] in hooks.owners ? hooks.owners[req.params[0]] : 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+        return ok({ context: { slot: chain.finalizedSlot }, value: owner === null ? null : { owner, lamports: 1, executable: false, rentEpoch: 0, data: ['', 'base64'] } });
+      }
       case 'getSignaturesForAddress':
         return ok(await chain.getSignaturesForAddress(req.params[0], req.params[1]));
       case 'getTransaction':

@@ -7,11 +7,13 @@ import { GENESIS_HASHES, RpcError, SolanaRpc } from '../chain/rpc.ts';
 import { createPool } from '../db/config.ts';
 import { migrationStatus, runMigrations } from '../db/migrate.ts';
 import { toStoreError } from '../db/errors.ts';
-import { Indexer, type IndexerStatus } from '../indexer/indexer.ts';
+import { Indexer, type FetchStats, type IndexerStatus } from '../indexer/indexer.ts';
 import { PgStore } from '../indexer/pg-store.ts';
 import type { LevelReachedEvent } from '../core/ledger.ts';
 import type { EngineConfig } from './config.ts';
 import { RequestLimiter, ShutdownError } from './limiter.ts';
+import { QuotaMonitor, type QuotaSnapshot } from './quota.ts';
+import { checkMintPrograms, mintProgramProblem } from './mint-check.ts';
 import { jsonSafe, type Logger } from './logger.ts';
 import { meteredFetch, RpcMeter, type MeterSnapshot } from './meter.ts';
 import { ProjectRunner, type RunnerSnapshot } from './runner.ts';
@@ -34,6 +36,8 @@ export interface ProjectStatus {
   runner: RunnerSnapshot;
   indexer: IndexerStatus | null;
   indexerError?: string;
+  /** How transactions were fetched (bulk vs individual requests): the evidence for the credit saving. */
+  fetch?: FetchStats;
 }
 
 export interface EngineStatus {
@@ -42,6 +46,8 @@ export interface EngineStatus {
   projects: ProjectStatus[];
   rpc: MeterSnapshot;
   limiter: { active: number; queued: number };
+  /** Present when RPC_MONTHLY_CREDITS is set: consumption vs the provider quota (local estimate). */
+  quota?: QuotaSnapshot;
 }
 
 export interface Engine {
@@ -68,6 +74,8 @@ export async function startEngine(cfg: EngineConfig, deps: EngineDeps): Promise<
   const meter = new RpcMeter(cfg.creditCosts);
   const baseFetch = deps.fetch ?? fetch;
 
+  const pendingMintCheck = new Set<string>(); // projects whose H2 check hit a transient RPC failure: re-checked by their runner
+
   // --- the RPC endpoint must serve the configured cluster (checked first: nothing else is touched if it does not) ---
   try {
     // counted like every other request (under the pseudo-project "_startup"): the meter must match what the provider receives
@@ -76,6 +84,10 @@ export async function startEngine(cfg: EngineConfig, deps: EngineDeps): Promise<
     if (genesis !== GENESIS_HASHES[cfg.cluster]) {
       throw new EngineStartError(`the RPC endpoint does not serve ${cfg.cluster} (genesis hash mismatch): check SOLANA_CLUSTER and the endpoint/API key`);
     }
+    // H2: every project's `tokenProgram` must be the real on-chain owner of its mint (a wrong one makes the parser ignore every burn, silently)
+    const { problems, unverified: unverifiedMints } = await checkMintPrograms(probe, projects);
+    for (const p of unverifiedMints) pendingMintCheck.add(p.id);
+    if (problems.length) throw new EngineStartError(`refusing to start, ${problems.length === 1 ? 'a project does' : 'projects do'} not match the chain:\n  - ${problems.join('\n  - ')}`);
   } catch (e) {
     if (e instanceof EngineStartError) throw e;
     const code = e instanceof RpcError ? e.message : 'request failed';
@@ -144,16 +156,24 @@ export async function startEngine(cfg: EngineConfig, deps: EngineDeps): Promise<
     runners.set(project.id, new ProjectRunner({
       projectId: project.id, indexer, store, log: plog, pollIntervalMs: cfg.pollIntervalMs,
       backoff: cfg.errorBackoff, leaseRetryMs: cfg.leaseRetryMs, sleep,
+      ...(pendingMintCheck.has(project.id) ? {
+        preflight: async () => {
+          const problem = await mintProgramProblem(rpc, project);
+          if (problem) throw new Error(problem);
+          plog.info('mint_program_verified', { tokenProgram: project.tokenProgram });
+        },
+      } : {}),
       reconcileIntervalMs: project.initialSupplyRaw !== null && project.startSlot === 0 ? cfg.reconcileIntervalMs : 0,
     }));
   }
 
+  const quota = cfg.rpcMonthlyCredits > 0 ? new QuotaMonitor({ monthlyCredits: cfg.rpcMonthlyCredits, meter, log: log.child({ component: 'quota' }) }) : null;
   const startedAt = new Date().toISOString();
   let state: EngineStatus['state'] = 'running';
   const status = async (): Promise<EngineStatus> => ({
-    state, startedAt, rpc: meter.snapshot(), limiter: limiter.stats,
+    state, startedAt, rpc: meter.snapshot(), limiter: limiter.stats, ...(quota ? { quota: quota.snapshot() } : {}),
     projects: await Promise.all(projects.map(async (p): Promise<ProjectStatus> => {
-      const base = { id: p.id, mint: p.mint, runner: runners.get(p.id)!.snapshot() };
+      const base = { id: p.id, mint: p.mint, runner: runners.get(p.id)!.snapshot(), fetch: indexers.get(p.id)!.fetchStats() };
       try {
         return { ...base, indexer: await indexers.get(p.id)!.status() };
       } catch (e) {
@@ -196,6 +216,8 @@ export async function startEngine(cfg: EngineConfig, deps: EngineDeps): Promise<
     ? setInterval(() => void status().then((s) => log.info('engine_status', JSON.parse(jsonSafe(s)))).catch(() => {}), cfg.statusLogIntervalMs)
     : null;
   statusTimer?.unref();
+  const quotaTimer = quota ? setInterval(() => quota.check(), cfg.quotaCheckIntervalMs) : null;
+  quotaTimer?.unref();
 
   let stopPromise: Promise<{ clean: boolean }> | null = null;
   let markStopped!: () => void;
@@ -206,6 +228,7 @@ export async function startEngine(cfg: EngineConfig, deps: EngineDeps): Promise<
       state = 'stopping';
       log.info('engine_stopping', { reason, timeoutMs: cfg.shutdownTimeoutMs });
       if (statusTimer) clearInterval(statusTimer);
+      if (quotaTimer) clearInterval(quotaTimer);
       await api?.close().catch(() => {}); // end SSE streams first: clients reconnect with Last-Event-ID elsewhere/later
       abort.abort(); // wakes every sleeping runner
       limiter.drain(); // no new RPC request; those already in flight may finish

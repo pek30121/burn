@@ -28,9 +28,12 @@ export interface EngineConfig {
   readonly errorBackoff: { readonly baseMs: number; readonly maxMs: number };
   readonly leaseRetryMs: number;
   readonly limits: { readonly maxConcurrent: number; readonly minIntervalMs: number };
-  readonly indexer: { readonly pageSize: number; readonly backfillPagesPerSync: number; readonly trackConfirmed: boolean; readonly maxTailPages: number };
+  readonly indexer: { readonly pageSize: number; readonly backfillPagesPerSync: number; readonly trackConfirmed: boolean; readonly maxTailPages: number; readonly batchFetch: boolean };
   /** Local estimate only (credits per RPC method). NOT the provider's billing. */
   readonly creditCosts: Readonly<Record<string, number>>;
+  /** Provider monthly credit quota for the consumption watch; 0 = no watch. */
+  readonly rpcMonthlyCredits: number;
+  readonly quotaCheckIntervalMs: number;
   readonly shutdownTimeoutMs: number;
   readonly statusLogIntervalMs: number;
   /** 0 disables. Projects with initialSupply are periodically checked against the on-chain supply. */
@@ -41,7 +44,9 @@ export interface EngineConfig {
   readonly http: ApiConfig & { readonly enabled: boolean };
 }
 
-export const DEFAULT_CREDIT_COSTS = { getSignaturesForAddress: 1, getTransaction: 1, getTokenSupply: 1 } as const;
+/** Standard calls: 1 credit (Helius). `getTransactionsForAddress` is billed per transactions returned (10 per 100, min. 10): the
+ * meter computes it from the response; this value is only the floor used for requests that returned nothing countable. */
+export const DEFAULT_CREDIT_COSTS = { getSignaturesForAddress: 1, getTransaction: 1, getTokenSupply: 1, getAccountInfo: 1, getTransactionsForAddress: 10 } as const;
 
 type Env = Record<string, string | undefined>;
 
@@ -149,6 +154,20 @@ export async function loadEngineConfig(env: Env = process.env): Promise<EngineCo
     if (!ok) issues.push('CORS_ORIGINS: expected a comma-separated list of exact origins such as https://app.example.com (no "*", no path)');
   }
 
+  // RPC_BATCH_FETCH: auto (default) = on only for a Helius endpoint, where `getTransactionsForAddress` exists; on / off force it.
+  // Safe either way: the indexer falls back to one `getTransaction` per signature for anything the bulk call does not give.
+  const batchFetch = (): boolean => {
+    const raw = env.RPC_BATCH_FETCH ?? 'auto';
+    if (raw === 'on' || raw === 'true') return true;
+    if (raw === 'off' || raw === 'false') return false;
+    if (raw !== 'auto') issues.push('RPC_BATCH_FETCH: expected auto, on or off');
+    try {
+      return new URL(rpcUrl ?? '').hostname.endsWith('helius-rpc.com');
+    } catch {
+      return false;
+    }
+  };
+
   const logLevel = (env.LOG_LEVEL ?? 'info') as LogLevel;
   if (!LOG_LEVELS.includes(logLevel)) issues.push(`LOG_LEVEL: expected one of ${LOG_LEVELS.join(', ')}`);
 
@@ -168,11 +187,14 @@ export async function loadEngineConfig(env: Env = process.env): Promise<EngineCo
       backfillPagesPerSync: int('BACKFILL_PAGES_PER_SYNC', 1, 1, 100),
       trackConfirmed: bool('TRACK_CONFIRMED', false),
       maxTailPages: int('MAX_TAIL_PAGES', 100, 1, 10_000),
+      batchFetch: batchFetch(),
     },
     shutdownTimeoutMs: int('SHUTDOWN_TIMEOUT_MS', 20_000, 100, 600_000),
     statusLogIntervalMs: int('STATUS_LOG_INTERVAL_MS', 300_000, 0, 86_400_000),
     reconcileIntervalMs: int('RECONCILE_INTERVAL_MS', 300_000, 0, 86_400_000),
     migrateOnStart: bool('MIGRATE_ON_START', true),
+    rpcMonthlyCredits: int('RPC_MONTHLY_CREDITS', 0, 0, 1_000_000_000_000),
+    quotaCheckIntervalMs: int('QUOTA_CHECK_INTERVAL_MS', 60_000, 1_000, 86_400_000),
   };
   const httpPortRaw = env.HTTP_PORT ?? env.PORT;
   const http = {

@@ -38,7 +38,7 @@ test('config: valid environment with safe, API-frugal defaults', async () => {
   const c = await loadEngineConfig(await env());
   assert.equal(c.registry.list().length, 2);
   assert.deepEqual([c.pollIntervalMs, c.limits.maxConcurrent, c.limits.minIntervalMs, c.indexer.trackConfirmed, c.migrateOnStart], [10_000, 4, 100, false, true]);
-  assert.deepEqual(c.creditCosts, { getSignaturesForAddress: 1, getTransaction: 1, getTokenSupply: 1 });
+  assert.deepEqual(c.creditCosts, { getSignaturesForAddress: 1, getTransaction: 1, getTokenSupply: 1, getAccountInfo: 1, getTransactionsForAddress: 10 });
 });
 
 test('config: every problem is reported at once, and no message contains a secret', async () => {

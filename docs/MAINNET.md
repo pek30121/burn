@@ -28,10 +28,10 @@ Results are written to `.mainnet/` (git-ignored).
 
 **Supply reconciliation with the production indexer, 4 real tokens** (authority revoked, full history read): `minted − supply now = indexed burns = raw-decoded burns`, engine verdict `verified` for all four (e.g. 359 signatures → 28 burn instructions, 8 333 792 715 971 raw; two Pump.fun mints with initial supply exactly 10¹⁵ raw).
 
-**Cost (estimate, 1 Helius credit per standard call per the Helius docs read on 2026-10-18; free plan 1 M credits/month):** scan 2 000 blocks = 2 463 requests; deep recheck = 322; reconciliation of 4 tokens = 964. A single hot token produced 31 000 signatures in ~15 min: following it with one `getTransaction` per signature would be ≈ 2 requests/s ≈ 5 M/month for that token alone.
+**Cost (estimate, 1 Helius credit per standard call per the Helius docs read on 2026-10-18; the project's plan has 10 M credits/month, DECISIONS D26/D27):** scan 2 000 blocks = 2 463 requests; deep recheck = 322; reconciliation of 4 tokens = 964. A single hot token produced 31 000 signatures in ~15 min: following it with one `getTransaction` per signature would be ≈ 2 requests/s ≈ 5 M/month for that token alone.
 
 ## Conclusions and limits
 * **No missed burn observed; exhaustive coverage is NOT proven** (15-minute sample, 4 mints not reachable). The guarantee remains the supply reconciliation (D8), now observed on real data.
-* **The real constraint is cost, not discovery**: the mint address appears in thousands of non-burn transactions (hot tokens) and each is fetched. Options (not implemented, see DECISIONS E2): Helius `getTransactionsForAddress` (10 credits per 100 full transactions), and supply-gated skipping. Reconciliation (D8) only works for mints with a revoked authority and a known supply history.
+* **The real constraint is cost, not discovery** (reduced ~89 % by the bulk transport of D26, not removed): the mint address appears in thousands of non-burn transactions (hot tokens) and each is fetched. Options (not implemented, see DECISIONS E2): Helius `getTransactionsForAddress` (10 credits per 100 full transactions), and supply-gated skipping. Reconciliation (D8) only works for mints with a revoked authority and a known supply history.
 * **Bug found by this audit**: wrong Token-2022 program id (D23). Before the fix the engine ignored 68 % of the burn instructions in this window, silently.
 * Not tested: burns by multisig/delegate, confidential Token-2022 burns, mints created before the node's retention, other providers.

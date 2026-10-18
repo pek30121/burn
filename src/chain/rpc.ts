@@ -6,7 +6,7 @@
  *   surfaced as RpcUnsupportedVersionError: it means "stop", not "not found".
  * - Error messages never contain the endpoint URL, which usually embeds an API key. */
 
-import { isSignature } from '../core/base58.ts';
+import { isPublicKey, isSignature } from '../core/base58.ts';
 import type { Commitment } from '../core/ledger.ts';
 
 export const MAX_SUPPORTED_TX_VERSION = 1;
@@ -23,10 +23,13 @@ export class RpcError extends Error {
   override name = 'RpcError';
   readonly code: number | null;
   readonly retryable: boolean;
-  constructor(message: string, o: { code?: number | null; retryable?: boolean } = {}) {
+  /** HTTP status when the failure was an HTTP one (e.g. 403 for a method the plan does not include). */
+  readonly httpStatus: number | null;
+  constructor(message: string, o: { code?: number | null; retryable?: boolean; httpStatus?: number | null } = {}) {
     super(message);
     this.code = o.code ?? null;
     this.retryable = o.retryable ?? false;
+    this.httpStatus = o.httpStatus ?? null;
   }
 }
 
@@ -62,6 +65,21 @@ export interface SignaturesQuery {
   readonly commitment: Commitment;
 }
 
+export interface BatchQuery {
+  readonly slotGte: number;
+  readonly slotLte: number;
+  readonly limit?: number;
+  readonly paginationToken?: string;
+}
+
+export interface BatchPage {
+  /** Each item is a `getTransaction`-shaped response (slot, blockTime, version, transaction, meta), keyed by its signature. */
+  readonly transactions: { signature: string; response: unknown }[];
+  /** Items the node returned (what Helius bills: 10 credits per 100, minimum 10). */
+  readonly returned: number;
+  readonly paginationToken: string | null;
+}
+
 export class SolanaRpc {
   readonly #url: string;
   readonly #fetch: typeof fetch;
@@ -89,6 +107,15 @@ export class SolanaRpc {
     const r = await this.#call('getGenesisHash', []);
     if (typeof r !== 'string' || r.length < 32 || r.length > 44) throw new RpcError('getGenesisHash: malformed response');
     return r;
+  }
+
+  /** Owner program of an account (no account data transferred), or null when the account does not exist. */
+  async getAccountOwner(address: string, commitment: Commitment): Promise<string | null> {
+    const result = (await this.#call('getAccountInfo', [address, { encoding: 'base64', dataSlice: { offset: 0, length: 0 }, commitment }])) as { value?: { owner?: unknown } | null } | null;
+    const v = result?.value;
+    if (v === null) return null;
+    if (!v || typeof v.owner !== 'string' || !isPublicKey(v.owner)) throw new RpcError('getAccountInfo: malformed response');
+    return v.owner;
   }
 
   /** Newest first, at most 1000 per call; follow with `before` = last signature of the page. */
@@ -121,6 +148,29 @@ export class SolanaRpc {
       signature,
       { encoding: 'json', maxSupportedTransactionVersion: MAX_SUPPORTED_TX_VERSION, commitment },
     ]);
+  }
+
+  /** Helius-only (`getTransactionsForAddress`): FULL successful transactions of an address in a slot range, newest first,
+   * in the same shape and encoding as `getTransaction`. A cheaper TRANSPORT for transactions already listed by
+   * `getSignaturesForAddress`, never a source of discovery: the caller falls back to `getTransaction` for anything absent. */
+  async getTransactionsForAddress(address: string, q: BatchQuery): Promise<BatchPage> {
+    const filters: Record<string, unknown> = { status: 'succeeded', slot: { gte: q.slotGte, lte: q.slotLte } };
+    const config: Record<string, unknown> = {
+      transactionDetails: 'full', encoding: 'json', maxSupportedTransactionVersion: MAX_SUPPORTED_TX_VERSION, commitment: 'finalized',
+      sortOrder: 'desc', limit: q.limit ?? SIGNATURES_PAGE_MAX, filters,
+    };
+    if (q.paginationToken !== undefined) config.paginationToken = q.paginationToken;
+    const result = (await this.#call('getTransactionsForAddress', [address, config])) as { data?: unknown; paginationToken?: unknown } | null;
+    if (!result || !Array.isArray(result.data) || !(result.paginationToken === null || result.paginationToken === undefined || typeof result.paginationToken === 'string')) {
+      throw new RpcError('getTransactionsForAddress: malformed response');
+    }
+    const transactions: BatchPage['transactions'] = [];
+    for (const item of result.data) {
+      // Entries that do not look like a transaction are skipped: the caller then fetches that signature on its own.
+      const sig = (item as { transaction?: { signatures?: unknown[] } } | null)?.transaction?.signatures?.[0];
+      if (typeof sig === 'string' && isSignature(sig)) transactions.push({ signature: sig, response: item });
+    }
+    return { transactions, returned: result.data.length, paginationToken: (result.paginationToken as string | null | undefined) ?? null };
   }
 
   /** Current supply in raw base units and the mint's decimals. */
@@ -167,7 +217,7 @@ export class SolanaRpc {
       if (Number.isFinite(ra) && ra > 0) err.retryAfterMs = Math.min(ra * 1000, 30_000);
       throw err;
     }
-    if (!res.ok) throw new RpcError(`${method}: HTTP ${res.status}`);
+    if (!res.ok) throw new RpcError(`${method}: HTTP ${res.status}`, { httpStatus: res.status });
 
     let body: { result?: unknown; error?: { code?: unknown; message?: unknown } };
     try {

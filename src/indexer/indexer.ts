@@ -15,13 +15,13 @@
  * successful supply reconciliation (see reconcile()). */
 
 import { parseBurns, toBurnInput } from '../chain/burn-parser.ts';
-import { RpcUnsupportedVersionError, type SignatureInfo, type SolanaRpc } from '../chain/rpc.ts';
+import { RpcError, RpcUnsupportedVersionError, type SignatureInfo, type SolanaRpc } from '../chain/rpc.ts';
 import type { ProjectConfig } from '../config/schema.ts';
 import type { Commitment, LevelReachedEvent } from '../core/ledger.ts';
 import { computeProgress, type Progress } from '../core/progression.ts';
 import type { IndexIssue, IndexState, IndexerStore, IssueCode, Totals, Verification } from './store.ts';
 
-export type ChainRpc = Pick<SolanaRpc, 'getSignaturesForAddress' | 'getTransaction' | 'getTokenSupply'>;
+export type ChainRpc = Pick<SolanaRpc, 'getSignaturesForAddress' | 'getTransaction' | 'getTokenSupply'> & Partial<Pick<SolanaRpc, 'getTransactionsForAddress'>>;
 
 export interface IndexerOptions {
   readonly project: ProjectConfig;
@@ -30,6 +30,12 @@ export interface IndexerOptions {
   /** Also track confirmed (not yet finalized) burns. Costs extra RPC calls; off by default. */
   readonly trackConfirmed?: boolean;
   readonly pageSize?: number;
+  /** Fetch the transactions of a finalized page in bulk (Helius `getTransactionsForAddress`, ~10x fewer credits than one
+   * `getTransaction` each). Discovery is unchanged (`getSignaturesForAddress`); anything the bulk call does not return,
+   * returns malformed or incomplete is fetched individually exactly as before. Off by default. */
+  readonly batchFetch?: boolean;
+  /** Below this many transactions a bulk request (10 credits minimum) costs more than fetching them one by one. */
+  readonly batchMinTransactions?: number;
   /** Max signature pages collected in one tail pass before the gap is declared too large. */
   readonly maxTailPages?: number;
   readonly backfillPagesPerSync?: number;
@@ -67,6 +73,18 @@ export interface IndexerStatus {
 
 class HaltSync extends Error {}
 
+/** What the transport did, to measure the saving (counts are requests, not credits). */
+export interface FetchStats {
+  readonly bulkRequests: number;
+  readonly bulkTransactions: number;
+  readonly singleRequests: number;
+  /** Transactions of a bulk-covered page that had to be fetched individually. */
+  readonly fallbacks: number;
+  readonly bulkDisabled: boolean;
+}
+
+const BULK_CHUNK = 1000;
+
 const describe = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export class Indexer {
@@ -83,6 +101,11 @@ export class Indexer {
   readonly #log: (msg: string) => void;
   readonly #attempts = new Map<string, number>();
   readonly #seenConfirmed = new Map<string, number>(); // signature -> slot
+  readonly #bulk = new Map<string, unknown>(); // signature -> getTransaction-shaped response, for the chunk being ingested
+  readonly #batchWanted: boolean;
+  readonly #batchMin: number;
+  #bulkDisabled = false;
+  #stats = { bulkRequests: 0, bulkTransactions: 0, singleRequests: 0, fallbacks: 0 };
   #state!: IndexState;
   #running = false;
 
@@ -92,12 +115,18 @@ export class Indexer {
     this.#store = o.store;
     this.#trackConfirmed = o.trackConfirmed ?? false;
     this.#pageSize = o.pageSize ?? 1000;
+    this.#batchWanted = (o.batchFetch ?? false) && typeof o.rpc.getTransactionsForAddress === 'function';
+    this.#batchMin = o.batchMinTransactions ?? 10;
     this.#maxTailPages = o.maxTailPages ?? 100;
     this.#backfillPages = o.backfillPagesPerSync ?? 1;
     this.#checkpointEvery = o.checkpointEvery ?? 50;
     this.#maxAttempts = o.maxSignatureAttempts ?? 5;
     this.#onEvent = o.onEvent;
     this.#log = o.log ?? (() => {});
+  }
+
+  fetchStats(): FetchStats {
+    return { ...this.#stats, bulkDisabled: this.#bulkDisabled };
   }
 
   async syncOnce(): Promise<SyncResult> {
@@ -206,7 +235,11 @@ export class Indexer {
       await this.#save();
       return;
     }
-    for (const info of [...page].reverse()) await this.#ingest(info, 'finalized', r);
+    const oldestFirst = [...page].reverse();
+    for (const [i, info] of oldestFirst.entries()) {
+      await this.#warm(oldestFirst, i);
+      await this.#ingest(info, 'finalized', r);
+    }
     const oldest = page[page.length - 1]!;
     this.#state.finalizedHead = page[0]!.signature;
     this.#state.finalizedHeadSlot = page[0]!.slot;
@@ -229,7 +262,9 @@ export class Indexer {
     let lastOk: SignatureInfo | null = null;
     let sinceCheckpoint = 0;
     try {
-      for (const info of list.reverse()) {
+      const oldestFirst = list.reverse();
+      for (const [i, info] of oldestFirst.entries()) {
+        await this.#warm(oldestFirst, i);
         await this.#ingest(info, 'finalized', r);
         lastOk = info;
         if (++sinceCheckpoint >= this.#checkpointEvery) {
@@ -253,7 +288,8 @@ export class Indexer {
       let lastOk: SignatureInfo | null = null;
       let sinceCheckpoint = 0;
       try {
-        for (const info of page) {
+        for (const [i, info] of page.entries()) {
+          await this.#warm(page, i);
           await this.#ingest(info, 'finalized', r);
           lastOk = info;
           if (++sinceCheckpoint >= this.#checkpointEvery) {
@@ -338,24 +374,30 @@ export class Indexer {
     if (info.err !== null || info.slot < this.project.startSlot) return true; // failed on-chain / before the counting window
     const sig = info.signature;
 
-    let tx: unknown;
-    try {
-      tx = await this.#rpc.getTransaction(sig, commitment);
-    } catch (e) {
-      if (e instanceof RpcUnsupportedVersionError && final) {
-        await this.#addIssue({ code: 'unsupported_version', signature: sig, detail: 'transaction version newer than supported' });
-        return true;
-      }
-      throw e;
+    const opts = { mint: this.project.mint, tokenProgram: this.project.tokenProgram, decimals: this.project.decimals, expectedSignature: sig };
+    const bulk = final ? this.#bulk.get(sig) : undefined;
+    this.#bulk.delete(sig);
+    let parsed: ReturnType<typeof parseBurns> | null = bulk === undefined ? null : parseBurns(bulk, opts);
+    // A bulk entry is only trusted when it parses cleanly and completely (the listing said it succeeded, so "failed" is suspect too); anything else is re-read the usual way.
+    if (parsed !== null && (parsed.status !== 'ok' || !parsed.complete)) {
+      this.#stats.fallbacks++;
+      parsed = null;
     }
-    if (tx === null) return this.#failed(final, 'tx_unavailable', sig, 'the node returned no transaction');
-
-    const parsed = parseBurns(tx, {
-      mint: this.project.mint,
-      tokenProgram: this.project.tokenProgram,
-      decimals: this.project.decimals,
-      expectedSignature: sig,
-    });
+    if (parsed === null) {
+      let tx: unknown;
+      try {
+        this.#stats.singleRequests++;
+        tx = await this.#rpc.getTransaction(sig, commitment);
+      } catch (e) {
+        if (e instanceof RpcUnsupportedVersionError && final) {
+          await this.#addIssue({ code: 'unsupported_version', signature: sig, detail: 'transaction version newer than supported' });
+          return true;
+        }
+        throw e;
+      }
+      if (tx === null) return this.#failed(final, 'tx_unavailable', sig, 'the node returned no transaction');
+      parsed = parseBurns(tx, opts);
+    }
     if (parsed.status === 'malformed') return this.#failed(final, 'malformed', sig, parsed.reason);
     if (parsed.status === 'failed') return true;
     if (!parsed.complete && final) {
@@ -371,6 +413,36 @@ export class Indexer {
     }
     this.#attempts.delete(sig);
     return true;
+  }
+
+  /** At each chunk boundary of a finalized page, bulk-fetch the next chunk's transactions (memory stays bounded). */
+  async #warm(order: readonly SignatureInfo[], index: number): Promise<void> {
+    if (!this.#batchWanted || this.#bulkDisabled || index % BULK_CHUNK !== 0) return;
+    this.#bulk.clear();
+    const chunk = order.slice(index, index + BULK_CHUNK).filter((i) => i.err === null && i.slot >= this.project.startSlot);
+    if (chunk.length < this.#batchMin) return;
+    const want = new Set(chunk.map((i) => i.signature));
+    const slotGte = Math.min(...chunk.map((i) => i.slot));
+    const slotLte = Math.max(...chunk.map((i) => i.slot));
+    let token: string | undefined;
+    try {
+      for (let pages = 0; pages < Math.ceil(chunk.length / BULK_CHUNK) + 3; pages++) {
+        const res = await this.#rpc.getTransactionsForAddress!(this.project.mint, { slotGte, slotLte, limit: BULK_CHUNK, ...(token ? { paginationToken: token } : {}) });
+        this.#stats.bulkRequests++;
+        this.#stats.bulkTransactions += res.returned;
+        for (const t of res.transactions) if (want.has(t.signature)) this.#bulk.set(t.signature, t.response);
+        if (res.paginationToken === null || this.#bulk.size >= want.size) break;
+        token = res.paginationToken;
+      }
+    } catch (e) {
+      // Never fatal: the individual path below fetches whatever is missing. A refusal that cannot succeed later
+      // (method or plan not available) switches the bulk path off for good; a transient failure only skips this chunk.
+      if (e instanceof RpcError && !e.retryable) {
+        this.#bulkDisabled = true;
+        this.#log(`bulk transaction fetch disabled: ${e.message}`);
+      } else this.#log(`bulk transaction fetch skipped for this chunk: ${describe(e)}`);
+    }
+    this.#stats.fallbacks += want.size - this.#bulk.size;
   }
 
   async #failed(final: boolean, code: IssueCode, sig: string, detail: string): Promise<boolean> {
