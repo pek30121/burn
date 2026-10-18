@@ -20,6 +20,17 @@ const store = await PgStore.create(pool, registry.list());   // registers projec
 if (await store.tryLockProject(project.id)) new Indexer({ project, rpc, store }).run(signal, 2000);
 ```
 
+## Run the engine
+
+```sh
+cp .env.example .env     # set SOLANA_RPC_URL, DATABASE_URL, PROJECTS_CONFIG (no secret is ever committed)
+npm start                # applies migrations, then watches every configured project
+```
+
+JSON logs on stdout; `SIGTERM`/`SIGINT` stop it cleanly (no new RPC reads, in-flight work finishes, leases and
+connections released); `SIGUSR2` logs the internal status including per-project RPC request counters and a
+local credit *estimate* (not the provider's billing). Polling and rate limits are set in `.env.example`.
+
 Real-database tests: create a dedicated database whose name contains `test`, then
 `TEST_DATABASE_URL=postgres://user:pass@127.0.0.1:5432/engine_test npm test` (each test uses its own schema, dropped afterwards).
 

@@ -377,3 +377,14 @@ test('[pg] a level never fires twice, even if the counters are restored to an ol
   assert.equal((await store.pendingEvents('alpha')).length, 0);
   assert.equal((await ctx.pool.query('SELECT count(*)::int AS n FROM level_events')).rows[0].n, 1);
 });
+
+test('[pg] reading the state while it is being saved never makes the next save stale (status polling vs. indexing)', opts, async () => {
+  const { store } = await freshStore([alpha]);
+  for (let i = 0; i < 60; i++) {
+    const s = await store.loadState('alpha');
+    s.finalizedHeadSlot = i;
+    await Promise.all([store.saveState('alpha', s), store.loadState('alpha')]); // a read racing with our own write
+    await store.saveState('alpha', { ...s, finalizedHeadSlot: i + 1000 }); // the indexer saves again without reloading
+  }
+  assert.equal((await store.loadState('alpha')).finalizedHeadSlot, 1059);
+});

@@ -9,7 +9,9 @@ export function registerSecret(value: string | undefined | null): void {
 }
 
 export function redact(text: string): string {
-  let out = text.replace(/postgres(?:ql)?:\/\/\S+/gi, '[redacted-url]');
+  let out = text
+    .replace(/postgres(?:ql)?:\/\/\S+/gi, '[redacted-url]')
+    .replace(/(api[-_]?key|access[-_]?token|secret)=[^&\s"']+/gi, '$1=[redacted]');
   for (const s of secrets) out = out.split(s).join('[redacted]');
   return out;
 }

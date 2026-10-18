@@ -59,3 +59,29 @@ if (TEST_URL) {
     await Promise.allSettled([...pools].map((p) => p.end()));
   });
 }
+
+export interface BareSchema {
+  schema: string;
+  /** DATABASE_URL pointing the engine at this schema (no migration applied yet). */
+  url: string;
+  newPool(): Pool;
+}
+
+/** An empty schema: used when the engine itself must apply the migrations. */
+export async function bareSchema(): Promise<BareSchema> {
+  const schema = `t_${randomBytes(6).toString('hex')}`;
+  const admin = createPool(cfg());
+  pools.add(admin);
+  await admin.query(`CREATE SCHEMA ${schema}`);
+  schemas.add(schema);
+  const url = `${TEST_URL}${TEST_URL!.includes('?') ? '&' : '?'}options=${encodeURIComponent(`-c search_path=${schema}`)}`;
+  return {
+    schema,
+    url,
+    newPool: () => {
+      const p = createPool(cfg(), { schema });
+      pools.add(p);
+      return p;
+    },
+  };
+}

@@ -226,7 +226,8 @@ export class PgStore implements IndexerStore {
     ]);
     const r = st.rows[0];
     if (!r) throw new StoreError(`no index state for project "${projectId}" (was the store created with it?)`);
-    this.#versions.set(projectId, num(r.version));
+    // Never move the known version backwards: a read that raced with our own save may be older.
+    this.#versions.set(projectId, Math.max(this.#versions.get(projectId) ?? 0, num(r.version)));
     return {
       finalizedHead: r.finalized_head,
       finalizedHeadSlot: r.finalized_head_slot === null ? null : num(r.finalized_head_slot),

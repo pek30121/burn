@@ -21,6 +21,33 @@ export interface MigrationResult {
   alreadyApplied: number;
 }
 
+export interface MigrationStatus {
+  /** Files not yet applied. */
+  pending: string[];
+  /** Applied files whose content changed since (refused by runMigrations). */
+  modified: string[];
+}
+
+/** Read-only: what would runMigrations do? */
+export async function migrationStatus(pool: Pool, dir: URL | string = DEFAULT_MIGRATIONS_DIR): Promise<MigrationStatus> {
+  const folder = typeof dir === 'string' ? dir : fileURLToPath(dir);
+  const names = (await readdir(folder)).filter((f) => FILE.test(f)).sort();
+  const status: MigrationStatus = { pending: [], modified: [] };
+  try {
+    const exists = (await pool.query("SELECT to_regclass('schema_migrations') IS NOT NULL AS t")).rows[0].t as boolean;
+    const applied = new Map<number, { name: string; checksum: string }>();
+    if (exists) for (const r of (await pool.query('SELECT version, name, checksum FROM schema_migrations')).rows) applied.set(r.version, r);
+    for (const [i, name] of names.entries()) {
+      const row = applied.get(i + 1);
+      if (!row) status.pending.push(name);
+      else if (row.name !== name || row.checksum !== createHash('sha256').update(await readFile(join(folder, name), 'utf8')).digest('hex')) status.modified.push(name);
+    }
+  } catch (e) {
+    throw toStoreError(e);
+  }
+  return status;
+}
+
 export async function runMigrations(pool: Pool, dir: URL | string = DEFAULT_MIGRATIONS_DIR): Promise<MigrationResult> {
   const folder = typeof dir === 'string' ? dir : fileURLToPath(dir);
   const names = (await readdir(folder)).filter((f) => FILE.test(f)).sort();
