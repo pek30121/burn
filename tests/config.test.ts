@@ -63,3 +63,10 @@ test('registry loads the example file', async () => {
   assert.equal(virus.levels.length, 7);
   assert.equal(virus.levels[6]!.thresholdRaw, 250_000_000_000_000n);
 });
+
+test('initialSupply is optional, converted exactly, and validated', () => {
+  assert.equal(parseProjectConfig(projectInput()).initialSupplyRaw, null);
+  assert.equal(parseProjectConfig(projectInput({ initialSupply: '1000000000' })).initialSupplyRaw, 1_000_000_000_000_000n);
+  assert.match(issuesOf(() => parseProjectConfig(projectInput({ initialSupply: '0' })))[0]!, /greater than 0/);
+  assert.match(issuesOf(() => parseProjectConfig(projectInput({ initialSupply: '1.0000001' })))[0]!, /fractional/);
+});

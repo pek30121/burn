@@ -6,3 +6,6 @@ export * from './config/schema.ts';
 export * from './config/registry.ts';
 export * from './chain/burn-parser.ts';
 export * from './chain/rpc.ts';
+export * from './indexer/store.ts';
+export * from './indexer/memory-store.ts';
+export * from './indexer/indexer.ts';

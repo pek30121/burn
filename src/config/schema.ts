@@ -29,6 +29,8 @@ export interface ProjectConfig {
   readonly mint: string;
   readonly decimals: number;
   readonly tokenProgram: TokenProgram;
+  /** Supply right after creation (raw units), if known. Enables the supply reconciliation proof. */
+  readonly initialSupplyRaw: bigint | null;
   /** Burns in slots before this one are ignored (e.g. count only after launch). */
   readonly startSlot: number;
   /** Sorted by threshold, strictly increasing; levels[0].thresholdRaw === 0n. */
@@ -96,6 +98,16 @@ export function parseProjectConfig(input: unknown, path = 'project'): ProjectCon
     } else startSlot = input.startSlot as number;
   }
 
+  let initialSupplyRaw: bigint | null = null;
+  if (input.initialSupply !== undefined) {
+    try {
+      initialSupplyRaw = parseUiAmount(input.initialSupply as string | number, decimals);
+      if (initialSupplyRaw === 0n) issues.push(`${path}.initialSupply: must be greater than 0`);
+    } catch (e) {
+      issues.push(`${path}.initialSupply: ${(e as Error).message}`);
+    }
+  }
+
   const levels: Level[] = [];
   if (!Array.isArray(input.levels) || input.levels.length === 0) {
     issues.push(`${path}.levels: expected a non-empty array`);
@@ -137,7 +149,7 @@ export function parseProjectConfig(input: unknown, path = 'project'): ProjectCon
   }
 
   if (issues.length) throw new ConfigError(issues);
-  return deepFreeze({ id, name, ticker, cluster, mint, decimals, tokenProgram, startSlot, levels });
+  return deepFreeze({ id, name, ticker, cluster, mint, decimals, tokenProgram, initialSupplyRaw, startSlot, levels });
 }
 
 function deepFreeze<T>(o: T): T {

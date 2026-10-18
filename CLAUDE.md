@@ -35,6 +35,7 @@ Moteur universel de burn/progression pour tokens SPL Solana (Pump.fun en priorit
 - `src/core/` — montants, base58, progression, ledger de référence.
 - `src/config/` — schéma et registre des projets.
 - `src/chain/` — lecture de la chaîne : `burn-parser.ts` (pur, sans I/O), `rpc.ts` (client JSON-RPC, `fetch` injectable). Entrée : réponse `getTransaction` en `encoding: "json"` avec `maxSupportedTransactionVersion: 1`.
+- `src/indexer/` — `indexer.ts` (un par projet : backfill, tail, confirmé/finalisé, reconcile), `store.ts` (interface de stockage + curseur), `memory-store.ts`.
 - `config/projects.example.json` — exemple de configuration multi-tokens.
-- `tests/` — tests unitaires (`*.test.ts`). `tests/fixtures/` : vraies transactions Devnet enregistrées (réponses `getTransaction` brutes), à ne pas modifier à la main.
+- `tests/` — tests unitaires (`*.test.ts`) ; `fake-chain.ts` simule un nœud avec pannes injectables. `tests/fixtures/` : vraies transactions Devnet enregistrées (réponses `getTransaction` brutes), à ne pas modifier à la main.
 - `DECISIONS.md` — décisions d'architecture : à mettre à jour à chaque choix structurant.
