@@ -27,3 +27,6 @@ Prices read from Replit's documentation on 2026-10-18 (re-check before paying):
 * **Completeness**: these tokens keep their mint authority, so the supply check cannot prove completeness (`history.complete = false`, by design).
 * **Health**: `/health/ready` (through the public port) is `ready` only when the database answers and the engine runs.
 * **Updating**: Git pane, Pull, then Run (workspace) / Republish (deployment).
+
+## Mainnet
+Not active by default. See `docs/MAINNET-LAUNCH.md` (`DEPLOY_NETWORK=mainnet`, engine only; unset it to return to this Devnet deployment).

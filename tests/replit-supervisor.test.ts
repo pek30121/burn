@@ -115,3 +115,23 @@ test('[replit] without a Helius key the engine uses the public Devnet RPC (with 
   assert.throws(() => replitSpecs({ SOLANA_CLUSTER: 'mainnet-beta', DATABASE_URL: 'postgres://u:p@h/db' }), /Devnet only/);
   assert.equal(replitSpecs({ DATABASE_URL: 'postgres://u:p@h/db', SOLANA_RPC_URL: 'https://custom.example' }, '/app').specs[0]!.env.SOLANA_RPC_URL, 'https://custom.example');
 });
+
+test('[replit] DEPLOY_NETWORK=mainnet: engine only, public API on PORT, fail-closed prerequisites, Devnet stays the default', () => {
+  const ok = { DEPLOY_NETWORK: 'mainnet', DATABASE_URL: 'postgres://u:Sup3rSecretPw@h/db', HELIUS_API_KEY: 'KEY-123456789', PROJECTS_CONFIG: 'deploy/projects.mainnet.json', PORT: '8080', SOLANA_CLUSTER: 'devnet' };
+  const { specs, warnings } = replitSpecs(ok, '/app');
+  assert.deepEqual(specs.map((s) => s.name), ['engine']);
+  const e = specs[0]!.env;
+  assert.equal(e.SOLANA_CLUSTER, 'mainnet-beta');
+  assert.equal(e.HTTP_HOST, '0.0.0.0');
+  assert.equal(e.HTTP_PORT, '8080');
+  assert.equal(e.PROJECTS_CONFIG, 'deploy/projects.mainnet.json');
+  assert.match(warnings.join(), /CORS_ORIGINS/);
+  assert.doesNotMatch(JSON.stringify(specs.map((s) => s.args)), /Sup3rSecretPw|KEY-123/);
+  for (const k of ['DATABASE_URL', 'HELIUS_API_KEY', 'PROJECTS_CONFIG'] as const) {
+    assert.throws(() => replitSpecs({ ...ok, [k]: undefined }, '/app'), /refusing to start on Mainnet/);
+  }
+  assert.throws(() => replitSpecs({ ...ok, PROJECTS_CONFIG: 'deploy/projects.devnet.json' }, '/app'), /PROJECTS_CONFIG/);
+  assert.throws(() => replitSpecs({ ...ok, SOLANA_RPC_URL: 'https://x.example' }, '/app'), /SOLANA_RPC_URL/);
+  assert.throws(() => replitSpecs({ DEPLOY_NETWORK: 'mainet', DATABASE_URL: 'postgres://u:p@h/db' }, '/app'), /DEPLOY_NETWORK/);
+  assert.deepEqual(replitSpecs({ DEPLOY_NETWORK: 'devnet', DATABASE_URL: 'postgres://u:p@h/db' }, '/app').specs.map((s) => s.name), ['engine', 'web']);
+});

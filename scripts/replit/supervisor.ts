@@ -4,7 +4,8 @@
  *  - each child is restarted with exponential backoff (1 s ... 30 s; the backoff resets once a child stayed up for a minute);
  *  - a crashing engine never takes the page down, and the page never hides an engine failure (exit codes are logged);
  *  - SIGTERM / SIGINT stop both children cleanly (SIGKILL after a grace period) and exit 0;
- *  - Devnet only: any other SOLANA_CLUSTER is refused;
+ *  - Devnet by default (rollback target): any other SOLANA_CLUSTER is refused. Mainnet only when DEPLOY_NETWORK=mainnet is set
+ *    explicitly (engine only, read-only public API on the public port, no wallet page, no /rpc proxy);
  *  - without DATABASE_URL (no Replit database attached yet) only the web server starts, with an explicit warning;
  *  - no secret is ever printed: only names, exit codes and delays.
  * Plain Node (compiled by tsc): it needs no TypeScript support at runtime. */
@@ -106,6 +107,8 @@ export function supervise(o: SupervisorOptions): Supervisor {
 /** The two children of the Replit deployment, from the environment (pure: tested). */
 export function replitSpecs(env: Record<string, string | undefined>, cwd: string = process.cwd()): { specs: ChildSpec[]; warnings: string[] } {
   const warnings: string[] = [];
+  if (env.DEPLOY_NETWORK === 'mainnet') return mainnetSpecs(env, cwd);
+  if (env.DEPLOY_NETWORK !== undefined && env.DEPLOY_NETWORK !== 'devnet') throw new Error('refusing to start: DEPLOY_NETWORK must be "devnet" or "mainnet"');
   if ((env.SOLANA_CLUSTER ?? 'devnet') !== 'devnet') throw new Error('refusing to start: this deployment is Devnet only (SOLANA_CLUSTER must be "devnet" or unset)');
   const port = env.PORT ?? env.WEB_PORT ?? '8080';
   const common = { ...env, SOLANA_CLUSTER: 'devnet' };
@@ -133,6 +136,24 @@ export function replitSpecs(env: Record<string, string | undefined>, cwd: string
   }
   specs.unshift({ name: 'engine', command: process.execPath, args: [`${cwd}/dist/main.js`], env: engineEnv });
   return { specs, warnings };
+}
+
+/** Mainnet: the engine alone, serving the read-only public API on the public port. Fail-closed: every prerequisite is explicit. */
+export function mainnetSpecs(env: Record<string, string | undefined>, cwd: string = process.cwd()): { specs: ChildSpec[]; warnings: string[] } {
+  const missing: string[] = [];
+  if (!env.DATABASE_URL) missing.push('DATABASE_URL');
+  if (!env.HELIUS_API_KEY) missing.push('HELIUS_API_KEY');
+  if (!env.PROJECTS_CONFIG || /devnet/i.test(env.PROJECTS_CONFIG)) missing.push('PROJECTS_CONFIG (a Mainnet file such as deploy/projects.mainnet.json)');
+  if (env.SOLANA_RPC_URL) missing.push('SOLANA_RPC_URL must be unset (the Helius Mainnet host is derived from HELIUS_API_KEY)');
+  if (missing.length) throw new Error(`refusing to start on Mainnet, missing or invalid: ${missing.join(', ')}`);
+  const port = env.PORT ?? env.WEB_PORT ?? '8080';
+  const engineEnv: Record<string, string | undefined> = {
+    ...env, SOLANA_CLUSTER: 'mainnet-beta', HTTP_ENABLED: 'true', HTTP_HOST: '0.0.0.0', HTTP_PORT: port, TRUST_PROXY: 'true',
+    RPC_MONTHLY_CREDITS: env.RPC_MONTHLY_CREDITS ?? '10000000', PORT: undefined,
+  };
+  const warnings: string[] = [];
+  if (!env.CORS_ORIGINS) warnings.push('CORS_ORIGINS is not set: browsers on other origins cannot read the public API (set it to your front-end origin).');
+  return { specs: [{ name: 'engine', command: process.execPath, args: [`${cwd}/dist/main.js`], env: engineEnv }], warnings };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
