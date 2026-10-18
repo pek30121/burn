@@ -21,3 +21,6 @@ Secrets to set in Replit: `DEPLOY_NETWORK=mainnet`, `HELIUS_API_KEY`, `DATABASE_
 5. PostgreSQL proof: `SELECT signature, instruction_path, amount, slot FROM burns WHERE project_id='<id>' ORDER BY slot DESC LIMIT 5;` (amount raw, exactly your burn).
 6. Historical proof: after the next reconcile (≤ 5 min, or right after the burn) `history.verifiedAt` is updated and `initialSupply − supply = burned` holds. Any `supply_mismatch` or `incomplete` state = stop and investigate; it is never ignored.
 7. Restart the engine: counters unchanged (idempotency).
+
+## FLAPY (premier projet Mainnet) — résultat de l'onboarding (lecture seule, 2026-10-18)
+Mint `GB5RZm2EgoY6MAdepyZaGhqewhP4tmutt5vYdeCLpump` : **Token-2022**, 6 décimales, supply 10^15 brut (10^9 tokens), autorité de mint **révoquée**, pas d'autorité de gel, extensions MetadataPointer + TokenMetadata (aucune bloquante), 695 signatures, 1 MintTo = 10^15 brut, 0 burn, identité `supply = créé − brûlé` **vérifiée**. Éligible à la preuve historique. `deploy/projects.mainnet.json` utilise ces valeurs (les niveaux l0/l1 sont des placeholders à remplacer par votre design avant la mise en production ; ajouter un autre token = ajouter une entrée au même fichier).

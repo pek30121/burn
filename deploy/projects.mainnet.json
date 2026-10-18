@@ -1,0 +1,19 @@
+{
+  "projects": [
+    {
+      "id": "flapy",
+      "name": "FLAPY",
+      "ticker": "FLAPY",
+      "cluster": "mainnet-beta",
+      "mint": "GB5RZm2EgoY6MAdepyZaGhqewhP4tmutt5vYdeCLpump",
+      "decimals": 6,
+      "tokenProgram": "token-2022",
+      "initialSupply": "1000000000",
+      "startSlot": 0,
+      "levels": [
+        { "id": "l0", "name": "Start", "threshold": "0" },
+        { "id": "l1", "name": "Level 1", "threshold": "1000000" }
+      ]
+    }
+  ]
+}
