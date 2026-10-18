@@ -199,6 +199,33 @@ test('runner: exponential backoff after failures, capped; a recovery is logged; 
   assert.equal(h.sleeps[6], 1000); // healthy again: normal poll interval
 });
 
+test('runner: REGRESSION — burns recorded by a sync that was cut short (shutdown or error) are still logged', async () => {
+  // shutdown during a sync that had already recorded burns
+  const ctl = new AbortController();
+  const logs: any[] = [];
+  const mk = (sync: () => Promise<SyncResult>) => new ProjectRunner({
+    projectId: 'alpha', store: {}, log: createLogger({ write: (l) => logs.push(JSON.parse(l)) }), pollIntervalMs: 1000, backoff: { baseMs: 1, maxMs: 2 }, leaseRetryMs: 1,
+    indexer: { syncOnce: sync, status: async () => ({ projectId: 'alpha', backfill: 'running', finalizedHead: null, totals: { finalizedRaw: 600n, confirmedRaw: 600n, count: 6 }, progress: { level: { id: 'l1' } } as any, issues: [], verification: { status: 'unverified', reason: '' }, complete: false }) },
+    sleep: async () => { ctl.abort(); throw new ShutdownError(); },
+  });
+  await mk(async () => { ctl.abort(); return ok({ burnsRecorded: 6, error: 'shutting down' }); }).run(ctl.signal);
+  const shut = logs.filter((l) => l.event === 'burns_indexed');
+  assert.deepEqual(shut.map((l) => [l.recorded, l.partial, l.totalFinalizedRaw, l.totalCount, l.level]), [[6, true, '600', 6, 'l1']]);
+  assert.equal(logs.filter((l) => l.event === 'sync_failed').length, 0, 'a shutdown is not reported as a failure');
+
+  // an error after some burns were recorded: reported as burns AND as a failure
+  logs.length = 0;
+  const ctl2 = new AbortController();
+  let n = 0;
+  await new ProjectRunner({
+    projectId: 'alpha', store: {}, log: createLogger({ write: (l) => logs.push(JSON.parse(l)) }), pollIntervalMs: 1000, backoff: { baseMs: 1, maxMs: 2 }, leaseRetryMs: 1,
+    indexer: { syncOnce: async () => ok(++n === 1 ? { burnsRecorded: 2, error: 'rpc down' } : {}), status: async () => ({ projectId: 'alpha', backfill: 'running', finalizedHead: null, totals: { finalizedRaw: 0n, confirmedRaw: 0n, count: 0 }, progress: { level: { id: 'l0' } } as any, issues: [], verification: { status: 'unverified', reason: '' }, complete: false }) },
+    sleep: async () => { if (n >= 2) { ctl2.abort(); throw new ShutdownError(); } },
+  }).run(ctl2.signal);
+  assert.deepEqual(logs.filter((l) => l.event === 'burns_indexed').map((l) => [l.recorded, l.partial]), [[2, true]]);
+  assert.equal(logs.filter((l) => l.event === 'sync_failed').length, 1);
+});
+
 test('runner: with backfill pending it keeps going without sleeping; when caught up it waits the poll interval', async () => {
   const h = harness((n) => ok({ moreWork: n < 4 }), {}, 2);
   await h.done;

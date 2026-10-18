@@ -83,6 +83,7 @@ export class ProjectRunner {
           }
           this.#state = 'syncing';
           const res = await this.#o.indexer.syncOnce();
+          await this.#logActivity(res); // burns recorded by a sync that stopped early (error, shutdown) are still reported
           if (signal.aborted) break;
           if (res.error) {
             await this.#fail(res.error);
@@ -118,7 +119,6 @@ export class ProjectRunner {
     this.#lastSyncAt = (this.#o.now ?? (() => new Date()))().toISOString();
     for (const w of res.warnings) log.warn('warning', { message: w });
 
-    const changed = res.burnsRecorded + res.burnsPromoted + res.burnsDropped > 0;
     let status: IndexerStatus | null = null;
     try {
       status = await this.#o.indexer.status();
@@ -126,12 +126,20 @@ export class ProjectRunner {
       log.warn('status_unavailable', { error: describe(e) });
     }
     if (status) this.#logIncidents(status);
-    if (changed) {
-      log.info('burns_indexed', {
-        recorded: res.burnsRecorded, finalized: res.burnsPromoted, dropped: res.burnsDropped,
-        totalFinalizedRaw: status?.totals.finalizedRaw.toString(), totalCount: status?.totals.count, level: status?.progress.level.id,
-      });
+  }
+
+  async #logActivity(res: Awaited<ReturnType<Indexer['syncOnce']>>): Promise<void> {
+    if (res.burnsRecorded + res.burnsPromoted + res.burnsDropped === 0) return;
+    let status: IndexerStatus | null = null;
+    try {
+      status = await this.#o.indexer.status();
+    } catch {
+      /* totals are optional in this line */
     }
+    this.#o.log.info('burns_indexed', {
+      recorded: res.burnsRecorded, finalized: res.burnsPromoted, dropped: res.burnsDropped, partial: res.error !== null,
+      totalFinalizedRaw: status?.totals.finalizedRaw.toString(), totalCount: status?.totals.count, level: status?.progress.level.id,
+    });
   }
 
   /** Supply proof: the only way `data.history.complete` can become true. A failure here is not a sync failure. */
