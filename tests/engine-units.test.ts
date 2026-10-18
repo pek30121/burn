@@ -71,6 +71,13 @@ test('config: credit costs are overridable', async () => {
 
 /* -------------------------------- logger ------------------------------- */
 
+test('logger: REGRESSION — reserved keys (time, level, event) cannot be overwritten by fields or child context', () => {
+  const lines: string[] = [];
+  const log = createLogger({ write: (l) => lines.push(l), now: () => new Date('2026-01-01T00:00:00Z') }).child({ level: 'l9', event: 'evil', time: 'x' });
+  log.warn('real_event', { level: 'l1', time: 'y', event: 'other', extra: 1 });
+  assert.deepEqual(JSON.parse(lines[0]!), { time: '2026-01-01T00:00:00.000Z', level: 'warn', event: 'real_event', extra: 1 });
+});
+
 test('logger: one JSON object per line, level filter, child context, bigint safe', () => {
   const lines: string[] = [];
   const log = createLogger({ level: 'info', write: (l) => lines.push(l), now: () => new Date('2026-01-01T00:00:00Z') });
@@ -210,7 +217,7 @@ test('runner: REGRESSION — burns recorded by a sync that was cut short (shutdo
   });
   await mk(async () => { ctl.abort(); return ok({ burnsRecorded: 6, error: 'shutting down' }); }).run(ctl.signal);
   const shut = logs.filter((l) => l.event === 'burns_indexed');
-  assert.deepEqual(shut.map((l) => [l.recorded, l.partial, l.totalFinalizedRaw, l.totalCount, l.level]), [[6, true, '600', 6, 'l1']]);
+  assert.deepEqual(shut.map((l) => [l.recorded, l.partial, l.totalFinalizedRaw, l.totalCount, l.progressLevel, l.level]), [[6, true, '600', 6, 'l1', 'info']]); // the progression level never replaces the log level
   assert.equal(logs.filter((l) => l.event === 'sync_failed').length, 0, 'a shutdown is not reported as a failure');
 
   // an error after some burns were recorded: reported as burns AND as a failure

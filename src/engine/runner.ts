@@ -138,7 +138,7 @@ export class ProjectRunner {
     }
     this.#o.log.info('burns_indexed', {
       recorded: res.burnsRecorded, finalized: res.burnsPromoted, dropped: res.burnsDropped, partial: res.error !== null,
-      totalFinalizedRaw: status?.totals.finalizedRaw.toString(), totalCount: status?.totals.count, level: status?.progress.level.id,
+      totalFinalizedRaw: status?.totals.finalizedRaw.toString(), totalCount: status?.totals.count, progressLevel: status?.progress.level.id,
     });
   }
 

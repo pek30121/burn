@@ -33,7 +33,8 @@ export function createLogger(o: LoggerOptions = {}): Logger {
   const make = (base: Record<string, unknown>): Logger => {
     const emit = (level: LogLevel, event: string, fields?: Record<string, unknown>) => {
       if (ORDER[level] < min) return;
-      write(redact(jsonSafe({ time: now().toISOString(), level, event, ...base, ...fields })));
+      // time / level / event are reserved: a field with the same name must never overwrite them
+      write(redact(jsonSafe({ ...base, ...fields, time: now().toISOString(), level, event })));
     };
     return {
       debug: (e, f) => emit('debug', e, f),

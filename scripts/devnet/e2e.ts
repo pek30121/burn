@@ -162,6 +162,7 @@ try {
   const a3Sig = await rpc<string>('sendTransaction', [Buffer.from(a3Wire).toString('base64'), { encoding: 'base64', preflightCommitment: 'confirmed' }]);
   let violation = false;
   let sawNotFinalizedWindow = false;
+  let windowSamples = 0;
   let sawPending = false;
   let a3Slot = 0;
   for (let i = 0; i < 400; i++) {
@@ -170,6 +171,7 @@ try {
     if (evs.includes('l1') && st?.confirmationStatus !== 'finalized') violation = true; // mutation visible although Devnet does not say finalized
     if (st && st.confirmationStatus !== 'finalized') {
       sawNotFinalizedWindow = true;
+      windowSamples++;
       if (BigInt((await status('tok-a')).totals.pendingFinalizationRaw) > 0n) sawPending = true;
     }
     if (st?.err) throw new Error(`a3 failed: ${JSON.stringify(st.err)}`);
@@ -180,7 +182,7 @@ try {
   log.push({ label: 'a3', project: 'tok-a', signature: a3Sig, slot: a3Slot, amountRaw: a3Raw.toString(), path: '0', kind: 'burnChecked' });
   r.fact('a3', `burnChecked 5 tokens (${a3Raw} raw) on tok-a CROSSING l1: ${a3Sig} slot ${a3Slot} FINALIZED`);
   r.check('no mutation was ever published while the crossing burn was not finalized on Devnet', !violation);
-  r.fact('confirmed-but-not-finalized window observed', `${sawNotFinalizedWindow}; engine showed it as pendingFinalization: ${sawPending}`);
+  r.fact('confirmed-but-not-finalized window observed', `${sawNotFinalizedWindow} (${windowSamples} samples; this Devnet finalizes in about 1 s, so the window is tiny); engine showed it as pendingFinalization: ${sawPending}`);
   await waitUntil(async () => (await mutations('tok-a')).includes('l1'), 'mutation l1 after finalization', 90_000);
   r.check('crossing burn: mutation l1 published exactly once, after finalization', (await mutations('tok-a')).filter((m) => m === 'l1').length === 1 && (await status('tok-a')).progression.level.id === 'l1');
 
@@ -231,6 +233,23 @@ try {
     r.check('Token-2022: Burn and BurnChecked detected, level l1 reached', !!(await burnEvent('tok-c', c1.signature)) && (await mutations('tok-c')).includes('l1'));
   }
 
+  /* ------------- 6b. a burn that FAILS on-chain must never be counted ------------- */
+  const beforeFail = (await status('tok-a')).totals.finalizedRaw;
+  const badWire = buildTransaction(payer, [], [ix.burnChecked(A.program, A.account.address, A.mint.address, payer.address, 1n * UI, 5)], await latestBlockhash()); // wrong decimals -> runtime error
+  const badSig = await rpc<string>('sendTransaction', [Buffer.from(badWire).toString('base64'), { encoding: 'base64', skipPreflight: true }]); // skip the pre-check so it lands on-chain with an error
+  let badErr: unknown = null;
+  let badSlot = 0;
+  for (let i = 0; i < 120; i++) {
+    const st = (await rpc<any>('getSignatureStatuses', [[badSig], { searchTransactionHistory: true }])).value[0];
+    if (st?.confirmationStatus === 'finalized') { badErr = st.err; badSlot = st.slot; break; }
+    await sleep(500);
+  }
+  r.fact('failed burn (BurnChecked, wrong decimals)', `${badSig} slot ${badSlot} landed FINALIZED with err ${JSON.stringify(badErr)}`);
+  r.check('the failed transaction really landed on-chain with an error (so the engine had to decide)', badErr !== null && badSlot > 0);
+  await sleep(6000); // several polling cycles
+  const supplyAfterFail = BigInt((await rpc<any>('getTokenSupply', [A.mint.address, { commitment: 'finalized' }])).value.amount);
+  r.check('failed transaction: not counted, no event, no incident, supply unchanged on-chain', !(await burnEvent('tok-a', badSig)) && (await status('tok-a')).totals.finalizedRaw === beforeFail && (await status('tok-a')).data.issues.count === 0 && SUPPLY_UI * UI - supplyAfterFail === sumRaw('tok-a'));
+
   /* ----------------- 7. per-burn verification, all projects ----------------- */
   await sleep(4000);
   for (const l of log) {
@@ -280,6 +299,12 @@ try {
   r.fact('transactions', log);
 } catch (e) {
   r.check('script completed without error', false, (e as Error).message);
+  if (booted) { // diagnostics only: engine log lines are already redacted and contain no secret
+    const keep = new Set(['sync_failed', 'warning', 'incident', 'recovered', 'lease_lost', 'supply_mismatch', 'reconcile_failed', 'burns_indexed', 'mutation', 'status_unavailable']);
+    console.log('--- engine log (diagnostic, last 25 relevant lines) ---');
+    for (const l of booted.lines.filter((x) => keep.has(x.event)).slice(-25)) console.log(JSON.stringify(l).slice(0, 400));
+    for (const id of ['tok-a', 'tok-b']) console.log(`--- ${id} status ---`, JSON.stringify((await status(id).catch(() => null))?.data ?? null).slice(0, 600));
+  }
 } finally {
   await booted?.stop().catch(() => {});
   await proxy.close();
