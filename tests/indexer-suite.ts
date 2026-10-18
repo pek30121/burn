@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Indexer, type IndexerOptions } from '../src/indexer/indexer.ts';
-import { MemoryStore } from '../src/indexer/memory-store.ts';
+import type { IndexerStore } from '../src/indexer/store.ts';
+import type { ProjectConfig } from '../src/config/schema.ts';
 import { parseProjectConfig } from '../src/config/schema.ts';
 import type { LevelReachedEvent } from '../src/core/ledger.ts';
 import { FakeChain } from './fake-chain.ts';
@@ -11,7 +12,14 @@ const L1 = 1_000_000_000n; // raw threshold of level l1 (6 decimals)
 const alpha = parseProjectConfig(projectInput({ initialSupply: '1000000' })); // 1e12 raw
 const beta = parseProjectConfig(projectInput({ id: 'beta', mint: MINT_B }));
 
-function setup(over: Partial<IndexerOptions> = {}, chain = new FakeChain(), store = new MemoryStore([alpha, beta])) {
+export type StoreFactory = (projects: readonly ProjectConfig[]) => Promise<IndexerStore>;
+
+/** The behaviour every IndexerStore must give the indexer; run against each implementation. */
+export function indexerSuite(label: string, makeStore: StoreFactory) {
+const t = (name: string, fn: () => Promise<void>) => test(`[${label}] ${name}`, fn);
+
+async function setup(over: Partial<IndexerOptions> = {}, chain = new FakeChain()) {
+  const store = await makeStore([alpha, beta]);
   const mk = (o: Partial<IndexerOptions> = {}) => new Indexer({ project: alpha, rpc: chain, store, pageSize: 3, ...over, ...o });
   return { chain, store, ix: mk(), mk };
 }
@@ -25,8 +33,8 @@ async function drain(ix: Indexer, max = 50) {
 }
 const fin = (chain: FakeChain, slot = 1_000) => void (chain.finalizedSlot = slot);
 
-test('backfill pages through the whole history; every burn counted once; completeness is NOT claimed', async () => {
-  const { chain, ix, store } = setup();
+t('backfill pages through the whole history; every burn counted once; completeness is NOT claimed', async () => {
+  const { chain, ix, store } = await setup();
   for (let s = 1; s <= 10; s++) chain.add({ slot: s, burns: [100n] });
   fin(chain);
   await drain(ix);
@@ -39,8 +47,8 @@ test('backfill pages through the whole history; every burn counted once; complet
   assert.equal(st.verification.status, 'unverified');
 });
 
-test('tail picks up new burns; failed transactions are skipped without fetching them; a quiet sync costs no getTransaction', async () => {
-  const { chain, ix, store } = setup();
+t('tail picks up new burns; failed transactions are skipped without fetching them; a quiet sync costs no getTransaction', async () => {
+  const { chain, ix, store } = await setup();
   for (let s = 1; s <= 4; s++) chain.add({ slot: s, burns: [10n] });
   fin(chain);
   await drain(ix);
@@ -57,8 +65,8 @@ test('tail picks up new burns; failed transactions are skipped without fetching 
   assert.equal(chain.calls.tx, quiet);
 });
 
-test('restart after an interruption during backfill: resumes, no duplicates, no loss', async () => {
-  const { chain, store, mk } = setup({ checkpointEvery: 1 });
+t('restart after an interruption during backfill: resumes, no duplicates, no loss', async () => {
+  const { chain, store, mk } = await setup({ checkpointEvery: 1 });
   for (let s = 1; s <= 8; s++) chain.add({ slot: s, burns: [100n] });
   fin(chain);
   chain.txFault = { skip: 4, times: 100 };
@@ -75,8 +83,8 @@ test('restart after an interruption during backfill: resumes, no duplicates, no 
   assert.ok(chain.calls.tx - calls <= 5, 'resume should not refetch what the cursor already passed');
 });
 
-test('restart after an interruption during tail: the cursor never skips an unprocessed signature', async () => {
-  const { chain, store, mk } = setup({ checkpointEvery: 1 });
+t('restart after an interruption during tail: the cursor never skips an unprocessed signature', async () => {
+  const { chain, store, mk } = await setup({ checkpointEvery: 1 });
   chain.add({ slot: 1, burns: [1n] });
   fin(chain);
   await drain(mk());
@@ -91,8 +99,8 @@ test('restart after an interruption during tail: the cursor never skips an unpro
   assert.equal((await store.totals('alpha')).count, 7);
 });
 
-test('RPC failure while listing signatures stops the sync without moving the cursor', async () => {
-  const { chain, store, ix } = setup();
+t('RPC failure while listing signatures stops the sync without moving the cursor', async () => {
+  const { chain, store, ix } = await setup();
   chain.add({ slot: 1, burns: [5n] });
   fin(chain);
   chain.sigsFault = { skip: 0, times: 1 };
@@ -103,8 +111,8 @@ test('RPC failure while listing signatures stops the sync without moving the cur
   assert.equal((await store.totals('alpha')).finalizedRaw, 5n);
 });
 
-test('a transaction the node cannot return is retried, then quarantined as a visible issue (never silently skipped)', async () => {
-  const { chain, ix, store } = setup({ maxSignatureAttempts: 3 });
+t('a transaction the node cannot return is retried, then quarantined as a visible issue (never silently skipped)', async () => {
+  const { chain, ix, store } = await setup({ maxSignatureAttempts: 3 });
   chain.add({ slot: 1, burns: [1n] });
   fin(chain);
   await drain(ix);
@@ -121,8 +129,8 @@ test('a transaction the node cannot return is retried, then quarantined as a vis
   assert.equal((await ix.reconcile()).status, 'mismatch'); // the supply proves something is missing
 });
 
-test('malformed and unsupported-version transactions become issues; the rest of the history still counts', async () => {
-  const { chain, ix, store } = setup({ maxSignatureAttempts: 2 });
+t('malformed and unsupported-version transactions become issues; the rest of the history still counts', async () => {
+  const { chain, ix, store } = await setup({ maxSignatureAttempts: 2 });
   chain.add({ slot: 1, burns: [1n] });
   const bad = chain.add({ slot: 2, response: { nonsense: true } });
   const v2 = chain.add({ slot: 3, burns: [9n] });
@@ -136,9 +144,9 @@ test('malformed and unsupported-version transactions become issues; the rest of 
   assert.deepEqual(codes, { [bad]: 'malformed', [v2]: 'unsupported_version' });
 });
 
-test('confirmed burns show in the optimistic total but never fire level events; finalization promotes and fires exactly once', async () => {
+t('confirmed burns show in the optimistic total but never fire level events; finalization promotes and fires exactly once', async () => {
   const events: LevelReachedEvent[] = [];
-  const { chain, ix, store } = setup({ trackConfirmed: true, onEvent: (e) => void events.push(e) });
+  const { chain, ix, store } = await setup({ trackConfirmed: true, onEvent: (e) => void events.push(e) });
   chain.add({ slot: 1 }); // creation-like tx, finalized
   chain.finalizedSlot = 1;
   await drain(ix);
@@ -163,8 +171,8 @@ test('confirmed burns show in the optimistic total but never fire level events; 
   assert.equal(events.length, 1);
 });
 
-test('a confirmed burn on an abandoned fork is dropped once the finalized history passed its slot', async () => {
-  const { chain, ix, store } = setup({ trackConfirmed: true });
+t('a confirmed burn on an abandoned fork is dropped once the finalized history passed its slot', async () => {
+  const { chain, ix, store } = await setup({ trackConfirmed: true });
   chain.add({ slot: 1 });
   chain.finalizedSlot = 1;
   await drain(ix);
@@ -179,8 +187,8 @@ test('a confirmed burn on an abandoned fork is dropped once the finalized histor
   assert.deepEqual(await store.totals('alpha'), { finalizedRaw: 0n, confirmedRaw: 0n, count: 0 });
 });
 
-test('a confirmed-pass failure is only a warning; finalized indexing is unaffected', async () => {
-  const { chain, ix, store } = setup({ trackConfirmed: true });
+t('a confirmed-pass failure is only a warning; finalized indexing is unaffected', async () => {
+  const { chain, ix, store } = await setup({ trackConfirmed: true });
   chain.add({ slot: 1, burns: [3n] });
   fin(chain);
   await ix.syncOnce(); // init (sigs call #1)
@@ -191,9 +199,9 @@ test('a confirmed-pass failure is only a warning; finalized indexing is unaffect
   assert.equal((await store.totals('alpha')).finalizedRaw, 3n);
 });
 
-test('level events are delivered at least once: a failing consumer keeps them in the outbox across restarts', async () => {
+t('level events are delivered at least once: a failing consumer keeps them in the outbox across restarts', async () => {
   const delivered: string[] = [];
-  const { chain, store, mk } = setup();
+  const { chain, store, mk } = await setup();
   chain.add({ slot: 1, burns: [L1] });
   fin(chain);
   const r1 = await mk({ onEvent: () => { throw new Error('consumer down'); } }).syncOnce();
@@ -208,9 +216,9 @@ test('level events are delivered at least once: a failing consumer keeps them in
   assert.deepEqual(delivered, ['l1']);
 });
 
-test('projects are isolated: separate cursors, ledgers and events, even for a transaction burning both tokens', async () => {
+t('projects are isolated: separate cursors, ledgers and events, even for a transaction burning both tokens', async () => {
   const chain = new FakeChain();
-  const store = new MemoryStore([alpha, beta]);
+  const store = await makeStore([alpha, beta]);
   const ia = new Indexer({ project: alpha, rpc: chain, store, pageSize: 3 });
   const ib = new Indexer({ project: beta, rpc: chain, store, pageSize: 3 });
   chain.add({ slot: 1, burns: [100n], burnsB: [7n] }); // one transaction, two tokens
@@ -226,10 +234,10 @@ test('projects are isolated: separate cursors, ledgers and events, even for a tr
   await assert.rejects(store.totals('ghost'), /unknown project/);
 });
 
-test('startSlot: older signatures are never fetched and the backfill stops with an explicit reason', async () => {
+t('startSlot: older signatures are never fetched and the backfill stops with an explicit reason', async () => {
   const p = parseProjectConfig(projectInput({ startSlot: 5 }));
   const chain = new FakeChain();
-  const store = new MemoryStore([p]);
+  const store = await makeStore([p]);
   const ix = new Indexer({ project: p, rpc: chain, store, pageSize: 3 });
   for (let s = 1; s <= 10; s++) chain.add({ slot: s, burns: [10n] });
   fin(chain);
@@ -239,8 +247,8 @@ test('startSlot: older signatures are never fetched and the backfill stops with 
   assert.equal((await ix.status()).backfill, 'done_start_slot');
 });
 
-test('a gap larger than the tail window is reported, not papered over', async () => {
-  const { chain, ix, store } = setup({ maxTailPages: 2 });
+t('a gap larger than the tail window is reported, not papered over', async () => {
+  const { chain, ix, store } = await setup({ maxTailPages: 2 });
   const head = chain.add({ slot: 1, burns: [1n] });
   fin(chain);
   await drain(ix);
@@ -253,8 +261,8 @@ test('a gap larger than the tail window is reported, not papered over', async ()
   assert.deepEqual((await ix.status()).issues.map((i) => i.code), ['tail_gap_too_large']);
 });
 
-test('signatures returned out of order are rejected as an inconsistent history', async () => {
-  const { chain, ix, store } = setup();
+t('signatures returned out of order are rejected as an inconsistent history', async () => {
+  const { chain, ix, store } = await setup();
   for (let s = 1; s <= 3; s++) chain.add({ slot: s, burns: [5n] });
   fin(chain);
   chain.scramble = true;
@@ -264,8 +272,8 @@ test('signatures returned out of order are rejected as an inconsistent history',
   assert.deepEqual((await ix.status()).issues.map((i) => i.code), ['history_inconsistent']);
 });
 
-test('reconcile: verified only when initialSupply − supply equals the indexed burns; any change invalidates it', async () => {
-  const { chain, ix } = setup();
+t('reconcile: verified only when initialSupply − supply equals the indexed burns; any change invalidates it', async () => {
+  const { chain, ix } = await setup();
   for (let s = 1; s <= 7; s++) chain.add({ slot: s, burns: [100n] });
   fin(chain);
   await drain(ix);
@@ -280,8 +288,8 @@ test('reconcile: verified only when initialSupply − supply equals the indexed 
   assert.equal((await ix.reconcile()).status, 'verified');
 });
 
-test('reconcile: a burn missing from the node history is detected as a mismatch with the exact gap', async () => {
-  const { chain, ix } = setup();
+t('reconcile: a burn missing from the node history is detected as a mismatch with the exact gap', async () => {
+  const { chain, ix } = await setup();
   chain.add({ slot: 1, burns: [100n] });
   chain.add({ slot: 2, burns: [40n], hidden: true });
   fin(chain);
@@ -290,8 +298,8 @@ test('reconcile: a burn missing from the node history is detected as a mismatch 
   assert.equal((await ix.status()).complete, false);
 });
 
-test('reconcile: retries when a burn lands between the supply reading and the catch-up sync', async () => {
-  const { chain, ix } = setup();
+t('reconcile: retries when a burn lands between the supply reading and the catch-up sync', async () => {
+  const { chain, ix } = await setup();
   chain.add({ slot: 1, burns: [100n] });
   fin(chain);
   await drain(ix);
@@ -306,12 +314,12 @@ test('reconcile: retries when a burn lands between the supply reading and the ca
   assert.equal(chain.calls.supply, 2);
 });
 
-test('reconcile refuses to conclude when it cannot compare', async () => {
-  const noSupply = setup({ project: beta });
+t('reconcile refuses to conclude when it cannot compare', async () => {
+  const noSupply = await setup({ project: beta });
   noSupply.chain.add({ slot: 1 });
   assert.match((await noSupply.ix.reconcile() as any).reason, /initialSupply is not configured/);
 
-  const { chain, ix } = setup();
+  const { chain, ix } = await setup();
   for (let s = 1; s <= 10; s++) chain.add({ slot: s, burns: [1n] });
   fin(chain);
   await ix.syncOnce(); // backfill still running (pageSize 3)
@@ -319,8 +327,8 @@ test('reconcile refuses to conclude when it cannot compare', async () => {
   assert.equal(v.status, 'unverified');
 });
 
-test('only one sync may run at a time', async () => {
-  const { chain, ix } = setup();
+t('only one sync may run at a time', async () => {
+  const { chain, ix } = await setup();
   chain.add({ slot: 1, burns: [1n] });
   fin(chain);
   const first = ix.syncOnce();
@@ -328,8 +336,8 @@ test('only one sync may run at a time', async () => {
   await first;
 });
 
-test('run() polls until aborted, sleeping only when there is nothing more to do', async () => {
-  const { chain, ix, store } = setup();
+t('run() polls until aborted, sleeping only when there is nothing more to do', async () => {
+  const { chain, ix, store } = await setup();
   for (let s = 1; s <= 7; s++) chain.add({ slot: s, burns: [2n] });
   fin(chain);
   const ctl = new AbortController();
@@ -340,3 +348,4 @@ test('run() polls until aborted, sleeping only when there is nothing more to do'
   assert.equal((await store.totals('alpha')).finalizedRaw, 14n);
   assert.equal(sleeps, 2);
 });
+}

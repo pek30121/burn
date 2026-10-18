@@ -9,3 +9,7 @@ export * from './chain/rpc.ts';
 export * from './indexer/store.ts';
 export * from './indexer/memory-store.ts';
 export * from './indexer/indexer.ts';
+export * from './indexer/pg-store.ts';
+export * from './db/config.ts';
+export * from './db/errors.ts';
+export * from './db/migrate.ts';

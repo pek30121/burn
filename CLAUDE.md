@@ -5,7 +5,8 @@ Moteur universel de burn/progression pour tokens SPL Solana (Pump.fun en priorit
 ## Commandes
 - `npm run typecheck` — TypeScript strict, sans émission.
 - `npm test` — runner `node:test` (Node ≥ 22.18, TypeScript exécuté nativement).
-- `npm run check` — les deux ; à lancer avant chaque commit.
+- `npm run check` — les deux ; à lancer avant chaque commit. Avec `TEST_DATABASE_URL` (base de test dédiée, voir `.env.example`) les tests PostgreSQL réels s'exécutent ; sans elle ils sont **ignorés** (ne jamais les compter comme réussis).
+- `npm run db:migrate` — applique `migrations/` à `DATABASE_URL`.
 
 ## Méthode de travail (permanente)
 - Une seule étape technique à la fois ; implémenter directement quand les exigences sont précises ; aucune fonctionnalité non demandée ; pas de refactorisation de code fonctionnel sans nécessité démontrée.
@@ -21,7 +22,7 @@ Moteur universel de burn/progression pour tokens SPL Solana (Pump.fun en priorit
 - Les événements de niveau ne partent que du total finalisé.
 - Aucune clé privée côté serveur ; aucune clé API dans les logs, réponses ou fichiers commités (`.env` est ignoré, seul `.env.example` est versionné).
 - Pas de Mainnet ni de service payant dans les tests ; tests réseau uniquement sur Devnet, et isolés des tests unitaires.
-- Toute donnée est clée par `project_id` ; aucun état partagé entre projets.
+- Toute donnée est clée par `project_id` ; aucun état partagé entre projets. Erreurs/logs : jamais l'URL ni le mot de passe de la base (passer par `StoreError`).
 - Parseur : une réponse `malformed` ou un résultat `complete: false` n'est **pas** « aucun burn » — l'appelant doit réessayer ou alerter, jamais l'ignorer. Les transactions `failed` ne comptent jamais.
 - Ne jamais annoncer une couverture exhaustive des burns sans preuve : citer les expériences de DECISIONS.md (E1) et leurs limites.
 
@@ -35,7 +36,8 @@ Moteur universel de burn/progression pour tokens SPL Solana (Pump.fun en priorit
 - `src/core/` — montants, base58, progression, ledger de référence.
 - `src/config/` — schéma et registre des projets.
 - `src/chain/` — lecture de la chaîne : `burn-parser.ts` (pur, sans I/O), `rpc.ts` (client JSON-RPC, `fetch` injectable). Entrée : réponse `getTransaction` en `encoding: "json"` avec `maxSupportedTransactionVersion: 1`.
-- `src/indexer/` — `indexer.ts` (un par projet : backfill, tail, confirmé/finalisé, reconcile), `store.ts` (interface de stockage + curseur), `memory-store.ts`.
+- `src/indexer/` — `indexer.ts` (un par projet : backfill, tail, confirmé/finalisé, reconcile), `store.ts` (interface de stockage + curseur), `memory-store.ts`, `pg-store.ts` (PostgreSQL, mêmes tests que la mémoire).
+- `src/db/` — `config.ts` (env → pool), `errors.ts` (erreurs expurgées), `migrate.ts`. `migrations/` — SQL versionné, jamais modifié après application (checksum).
 - `config/projects.example.json` — exemple de configuration multi-tokens.
 - `tests/` — tests unitaires (`*.test.ts`) ; `fake-chain.ts` simule un nœud avec pannes injectables. `tests/fixtures/` : vraies transactions Devnet enregistrées (réponses `getTransaction` brutes), à ne pas modifier à la main.
 - `DECISIONS.md` — décisions d'architecture : à mettre à jour à chaque choix structurant.
