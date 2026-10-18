@@ -153,3 +153,8 @@ vite.config.ts.timestamp-*
 
 # Mainnet audit artifacts (read-only runs)
 .mainnet/
+
+# Browser build of the wallet module and generated test-page config
+web/dist/
+web/wallet-test/config.json
+.wallet-test/

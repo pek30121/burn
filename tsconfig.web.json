@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": false, "outDir": "web/dist", "rootDir": "src", "declaration": false, "sourceMap": false, "types": ["node"] },
+  "include": ["src/wallet/*.ts", "src/core/amount.ts", "src/core/base58.ts", "src/chain/rpc.ts", "src/config/schema.ts"]
+}

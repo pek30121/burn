@@ -4,6 +4,11 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { RPC_URL } from './rpc.ts';
 
+/** The engine's start-up guards (cluster genesis hash, mint owner) run before any indexing; an "outage" that also blocked them
+ * would stop the engine from starting at all instead of testing how indexing behaves during an outage. */
+const STARTUP_GUARDS = new Set(['getGenesisHash', 'getAccountInfo']);
+const methodOf = (body: string): string => { try { return String(JSON.parse(body).method); } catch { return ''; } };
+
 export async function startCuttableProxy(target: string = RPC_URL) {
   let cut = false;
   let forwarded = 0;
@@ -12,7 +17,7 @@ export async function startCuttableProxy(target: string = RPC_URL) {
     let body = '';
     req.on('data', (c) => (body += c));
     req.on('end', async () => {
-      if (cut) {
+      if (cut && !STARTUP_GUARDS.has(methodOf(body))) {
         refused++;
         res.writeHead(503).end();
         return;

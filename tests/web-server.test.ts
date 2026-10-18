@@ -1,0 +1,87 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { createWebServer, RPC_ALLOWLIST } from '../scripts/wallet-test/server.ts';
+
+const KEY = 'SERVER-ONLY-HELIUS-KEY-123';
+interface Seen { url: string; body?: any }
+
+async function start(over: { rate?: number; upstream?: (url: string, init?: RequestInit) => Response | Promise<Response> } = {}) {
+  const seen: Seen[] = [];
+  const fakeFetch = (async (input: any, init?: RequestInit) => {
+    const url = String(input);
+    seen.push({ url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    if (over.upstream) return over.upstream(url, init);
+    if (url.startsWith('http://engine.local')) return new Response(JSON.stringify({ ok: true, path: new URL(url).pathname }), { headers: { 'content-type': 'application/json' } });
+    return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: 'ok' }));
+  }) as typeof fetch;
+  const server = createWebServer({ upstreamRpc: `https://devnet.helius-rpc.com/?api-key=${KEY}`, engineUrl: 'http://engine.local:8787', ratePerMinute: over.rate ?? 1000, fetch: fakeFetch, config: { cluster: 'devnet', rpcUrl: '/rpc', engineBase: '', projects: [] } });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  return { base, seen, close: () => new Promise<void>((r) => { server.closeAllConnections(); server.close(() => r()); }) };
+}
+const rpc = (base: string, body: unknown) => fetch(`${base}/rpc`, { method: 'POST', body: typeof body === 'string' ? body : JSON.stringify(body) });
+
+test('[web] /rpc forwards only the allowlisted methods, with the server-side key, and never returns it', async () => {
+  const s = await start();
+  try {
+    for (const method of RPC_ALLOWLIST) {
+      const res = await rpc(s.base, { jsonrpc: '2.0', id: 7, method, params: [] });
+      assert.equal(res.status, 200, method);
+    }
+    const up = s.seen.at(-1)!;
+    assert.match(up.url, new RegExp(`api-key=${KEY}`), 'the upstream call carries the key (server side only)');
+    assert.deepEqual(Object.keys(up.body).sort(), ['id', 'jsonrpc', 'method', 'params']);
+    for (const method of ['getProgramAccounts', 'getTransaction', 'requestAirdrop', 'getSlot', 'getTokenLargestAccounts', 'sendBundle']) {
+      const res = await rpc(s.base, { jsonrpc: '2.0', id: 1, method, params: [] });
+      assert.equal(res.status, 403, method);
+    }
+    const before = s.seen.length;
+    assert.equal((await rpc(s.base, [{ jsonrpc: '2.0', id: 1, method: 'getBalance' }])).status, 400, 'batches refused');
+    assert.equal((await rpc(s.base, 'not json')).status, 400);
+    assert.equal((await rpc(s.base, 'x'.repeat(70_000))).status, 413);
+    assert.equal((await fetch(`${s.base}/rpc`)).status, 405);
+    assert.equal(s.seen.length, before, 'refused requests never reach the upstream');
+  } finally { await s.close(); }
+});
+
+test('[web] an upstream that echoes the key, fails, or is down cannot leak it', async () => {
+  const echo = await start({ upstream: () => new Response(`{"error":{"message":"bad https://devnet.helius-rpc.com/?api-key=${KEY}"}}`) });
+  try {
+    const text = await (await rpc(echo.base, { jsonrpc: '2.0', id: 1, method: 'getBalance', params: [] })).text();
+    assert.doesNotMatch(text, new RegExp(KEY));
+  } finally { await echo.close(); }
+  const down = await start({ upstream: () => { throw new TypeError(`fetch failed https://devnet.helius-rpc.com/?api-key=${KEY}`); } });
+  try {
+    const res = await rpc(down.base, { jsonrpc: '2.0', id: 1, method: 'getBalance', params: [] });
+    assert.equal(res.status, 502);
+    assert.doesNotMatch(await res.text(), new RegExp(`${KEY}|helius`));
+  } finally { await down.close(); }
+});
+
+test('[web] rate limit per client', async () => {
+  const s = await start({ rate: 3 });
+  try {
+    const codes: number[] = [];
+    for (let i = 0; i < 5; i++) codes.push((await rpc(s.base, { jsonrpc: '2.0', id: 1, method: 'getBalance', params: [] })).status);
+    assert.deepEqual(codes, [200, 200, 200, 429, 429]);
+  } finally { await s.close(); }
+});
+
+test('[web] the engine proxy is GET only and read-only; static files cannot escape the web directory', async () => {
+  const s = await start();
+  try {
+    assert.equal((await fetch(`${s.base}/api/v1/projects/x/status`)).status, 200);
+    assert.equal(s.seen.at(-1)!.url, 'http://engine.local:8787/api/v1/projects/x/status');
+    assert.equal((await fetch(`${s.base}/api/v1/projects/x/status`, { method: 'POST' })).status, 405);
+    assert.equal((await fetch(`${s.base}/api/v1/projects/x/status`, { method: 'DELETE' })).status, 405);
+    const index = await fetch(`${s.base}/`);
+    assert.equal(index.status, 200);
+    assert.match(await index.text(), /Burn — page de test wallet/);
+    for (const evil of ['/../package.json', '/..%2fpackage.json', '/%2e%2e/%2e%2e/.env', '/dist/../../package.json', '/app.js%00.json']) {
+      const res = await fetch(`${s.base}${evil}`);
+      assert.ok(res.status === 404 || res.status === 400, `${evil} -> ${res.status}`);
+      assert.doesNotMatch(await res.text(), /solana-token-engine/);
+    }
+    assert.deepEqual(await (await fetch(`${s.base}/config.json`)).json(), { cluster: 'devnet', rpcUrl: '/rpc', engineBase: '', projects: [] });
+  } finally { await s.close(); }
+});

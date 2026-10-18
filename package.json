@@ -21,6 +21,10 @@
     "devnet:probe": "node scripts/devnet/probe-confirmed.ts",
     "devnet:rpc-check": "node scripts/devnet/rpc-check.ts",
     "devnet:wallet-flow": "node scripts/devnet/wallet-flow.ts",
+    "web:build": "tsc -p tsconfig.web.json",
+    "web:serve": "node scripts/wallet-test/server.ts",
+    "web:setup": "node scripts/wallet-test/setup.ts",
+    "web:browser-test": "node scripts/wallet-test/browser-test.ts",
     "mainnet:scan": "node scripts/mainnet/scan.ts",
     "mainnet:reconcile": "node scripts/mainnet/reconcile.ts"
   },
