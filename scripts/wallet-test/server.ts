@@ -36,8 +36,12 @@ export interface WebServerOptions {
   now?: () => number;
   /** Served as /config.json instead of the file (tests, deployment). */
   config?: unknown;
-  /** Behind a reverse proxy (e.g. Replit): rate-limit by the first X-Forwarded-For address instead of the proxy's. */
+  /** Behind ONE reverse proxy (e.g. Replit): rate-limit by the last X-Forwarded-For address instead of the proxy's. */
   trustProxy?: boolean;
+  /** /rpc answers 503 until this returns true (the upstream network has been verified). */
+  rpcReady?: () => boolean;
+  /** Maximum simultaneously proxied event streams (the engine adds its own per-client caps). */
+  maxStreams?: number;
 }
 
 const redact = (s: string) => s.replace(/api-key=[^&\s"']+/gi, 'api-key=***');
@@ -53,6 +57,14 @@ export function createWebServer(o: WebServerOptions) {
     hits.set(ip, recent);
     return recent.length > (o.ratePerMinute ?? 120);
   };
+  /** Behind ONE trusted reverse proxy the real client is the LAST X-Forwarded-For entry (the proxy appends it; earlier entries are client-supplied, like the engine does it). */
+  const clientIp = (req: IncomingMessage): string => {
+    if (o.trustProxy) {
+      const last = String(req.headers['x-forwarded-for'] ?? '').split(',').pop()?.trim();
+      if (last && last.length <= 45) return last;
+    }
+    return req.socket.remoteAddress ?? '?';
+  };
   const json = (res: ServerResponse, status: number, body: unknown) => {
     res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
     res.end(JSON.stringify(body));
@@ -60,6 +72,7 @@ export function createWebServer(o: WebServerOptions) {
 
   async function rpcProxy(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (req.method !== 'POST') return json(res, 405, { error: 'POST only' });
+    if (o.rpcReady && !o.rpcReady()) return json(res, 503, { jsonrpc: '2.0', id: null, error: { code: -32003, message: 'the upstream network is not verified yet; retry in a few seconds' } });
     const chunks: Buffer[] = [];
     let size = 0;
     for await (const c of req) {
@@ -81,14 +94,41 @@ export function createWebServer(o: WebServerOptions) {
     }
   }
 
+  let openStreams = 0;
   async function engineProxy(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
     if (req.method !== 'GET') return json(res, 405, { error: 'GET only (the engine API is read-only)' });
+    const isStream = /^\/api\/v1\/projects\/[^/]+\/stream$/.test(new URL(path, 'http://x').pathname);
+    // The engine rate-limits and caps streams per client address: hand it the real one (single value, we are its only proxy).
+    const headers: Record<string, string> = { accept: isStream ? 'text/event-stream' : 'application/json', 'x-forwarded-for': clientIp(req) };
+    const lastEventId = req.headers['last-event-id'];
+    if (isStream && typeof lastEventId === 'string') headers['last-event-id'] = lastEventId;
+    if (isStream && openStreams >= (o.maxStreams ?? 100)) return json(res, 503, { error: { code: 'stream_capacity', message: 'Too many open streams.' } });
+    const abort = new AbortController();
+    res.on('close', () => abort.abort());
     try {
-      const up = await doFetch(new URL(path, o.engineUrl), { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(10_000) });
-      res.writeHead(up.status, { 'content-type': up.headers.get('content-type') ?? 'application/json', 'cache-control': 'no-store' });
-      res.end(Buffer.from(await up.arrayBuffer()));
+      const up = await doFetch(new URL(path, o.engineUrl), { headers, signal: isStream ? abort.signal : AbortSignal.timeout(10_000) });
+      if (!isStream || !up.body) {
+        res.writeHead(up.status, { 'content-type': up.headers.get('content-type') ?? 'application/json', 'cache-control': 'no-store' });
+        res.end(Buffer.from(await up.arrayBuffer()));
+        return;
+      }
+      // Server-Sent Events: pass the stream through unbuffered; closing either side closes the other.
+      res.writeHead(up.status, { 'content-type': up.headers.get('content-type') ?? 'text/event-stream', 'cache-control': 'no-store', 'x-accel-buffering': 'no', connection: 'keep-alive' });
+      openStreams++;
+      try {
+        const reader = up.body.getReader();
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (!res.write(value)) await new Promise<void>((r) => res.once('drain', r));
+        }
+      } finally {
+        openStreams--;
+        res.end();
+      }
     } catch {
-      json(res, 502, { error: { code: 'engine_unreachable', message: 'The engine is not reachable from the test server.' } });
+      if (!res.headersSent) json(res, 502, { error: { code: 'engine_unreachable', message: 'The engine is not reachable from the test server.' } });
+      else res.end();
     }
   }
 
@@ -109,8 +149,7 @@ export function createWebServer(o: WebServerOptions) {
     void (async () => {
       try {
         const url = new URL(req.url ?? '/', 'http://localhost');
-        const forwarded = o.trustProxy ? String(req.headers['x-forwarded-for'] ?? '').split(',')[0]?.trim() : '';
-        const ip = forwarded || (req.socket.remoteAddress ?? '?');
+        const ip = clientIp(req);
         if (url.pathname === '/rpc' || url.pathname.startsWith('/api/')) if (limited(ip)) return json(res, 429, { error: 'rate limited' });
         if (url.pathname === '/rpc') return await rpcProxy(req, res);
         if (url.pathname === '/config.json' && o.config !== undefined) return json(res, 200, o.config);
@@ -127,11 +166,23 @@ export function createWebServer(o: WebServerOptions) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   const key = process.env.HELIUS_API_KEY;
   const upstream = process.env.WEB_UPSTREAM_RPC_URL ?? (key ? `https://devnet.helius-rpc.com/?api-key=${key}` : 'https://api.devnet.solana.com');
-  const genesis = (await (await fetch(upstream, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getGenesisHash' }) })).json() as { result?: string }).result;
-  if (genesis !== GENESIS_HASHES.devnet) throw new Error('refusing to start: the upstream RPC is not Solana Devnet');
+  // The page must come up even if the upstream is briefly unreachable at start: /rpc answers 503 until the genesis hash proves
+  // the upstream is Devnet (checked again every few seconds); a DIFFERENT network is fatal, never relayed.
+  let verified = false;
+  const verify = async (): Promise<void> => {
+    for (;;) {
+      try {
+        const genesis = ((await (await fetch(upstream, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getGenesisHash' }), signal: AbortSignal.timeout(10_000) })).json()) as { result?: string }).result;
+        if (genesis === GENESIS_HASHES.devnet) { verified = true; console.log('upstream RPC verified: Devnet'); return; }
+        if (typeof genesis === 'string') { console.error('refusing to relay: the upstream RPC is not Solana Devnet'); process.exit(1); }
+      } catch { /* unreachable or malformed: retry */ }
+      await new Promise((r) => setTimeout(r, 5_000));
+    }
+  };
+  void verify();
   const port = Number(process.env.WEB_PORT ?? process.env.PORT ?? 8788);
   const host = process.env.WEB_HOST ?? '127.0.0.1';
-  const server = createWebServer({ upstreamRpc: upstream, engineUrl: process.env.ENGINE_URL ?? 'http://127.0.0.1:8787', ratePerMinute: Number(process.env.WEB_RATE_PER_MINUTE ?? 120), trustProxy: process.env.WEB_TRUST_PROXY === '1',
+  const server = createWebServer({ upstreamRpc: upstream, engineUrl: process.env.ENGINE_URL ?? 'http://127.0.0.1:8787', ratePerMinute: Number(process.env.WEB_RATE_PER_MINUTE ?? 120), rpcReady: () => verified, trustProxy: process.env.WEB_TRUST_PROXY === '1',
     ...(process.env.WEB_CONFIG_FILE ? { config: JSON.parse(readFileSync(process.env.WEB_CONFIG_FILE, 'utf8')) } : {}) });
   server.listen(port, host, () => console.log(`wallet test page: http://${host === '0.0.0.0' ? 'localhost' : host}:${port}/  (RPC: ${process.env.WEB_UPSTREAM_RPC_URL ? 'custom upstream' : key ? 'Helius Devnet' : 'public Devnet'} via /rpc, key never sent to the browser; engine: ${process.env.ENGINE_URL ?? 'http://127.0.0.1:8787'})`));
 }

@@ -1,20 +1,23 @@
-# Replit: deploys ONLY the Devnet wallet test page (no engine, no database, no secret).
-modules = ["nodejs-20"]
-run = "npm install --no-audit --no-fund && npm run web:build:all && npm run web:start"
+# Replit (Devnet only): ONE container runs the test page + /rpc proxy (public port) AND the burn engine (PostgreSQL, indexers,
+# read-only API on 127.0.0.1, reached through the page's own origin). See deploy/README.md.
+modules = ["nodejs-22"]
+run = "npm install --no-audit --no-fund --include=dev && npm run build:replit && npm run replit:start"
 
 [env]
-WEB_HOST = "0.0.0.0"
-WEB_PORT = "8080"
-WEB_TRUST_PROXY = "1"
+SOLANA_CLUSTER = "devnet"
+PROJECTS_CONFIG = "deploy/projects.devnet.json"
 WEB_CONFIG_FILE = "deploy/wallet-test-config.json"
+RPC_MONTHLY_CREDITS = "10000000"
 
 [nix]
 channel = "stable-24_05"
 
 [deployment]
+# Kept on Autoscale (no cost change by itself). The engine only indexes while an instance is awake and catches up on wake-up;
+# for an engine that never sleeps, switch the deployment type to Reserved VM in the Publish panel (paid: see deploy/README.md).
 deploymentTarget = "autoscale"
-build = ["sh", "-c", "npm install --no-audit --no-fund && npm run web:build:all"]
-run = ["sh", "-c", "npm run web:start"]
+build = ["sh", "-c", "npm install --no-audit --no-fund --include=dev && npm run build:replit"]
+run = ["sh", "-c", "npm run replit:start"]
 
 [[ports]]
 localPort = 8080

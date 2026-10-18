@@ -1,5 +1,5 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": { "noEmit": false, "outDir": "web/serve-dist", "rootDir": ".", "declaration": false, "sourceMap": false, "types": ["node"] },
-  "include": ["scripts/wallet-test/server.ts"]
+  "include": ["scripts/wallet-test/server.ts", "scripts/replit/supervisor.ts"]
 }

@@ -122,5 +122,20 @@ $('reset').onclick = () => { controller.reset(); $('amount').value = ''; };
 setInterval(() => void act('counter', () => controller.refreshCounter()), 4000);
 await newController(false);
 void act('counter', () => controller.refreshCounter());
+// Live counter: the engine's event stream (SSE). Every burn / level event only triggers a re-read of the engine's status, so the
+// number shown is always the engine's, never computed here. The 4 s poll above stays as the fallback if the stream drops.
+let stream = null;
+function openStream() {
+  stream?.close();
+  if (typeof EventSource === 'undefined') return;
+  const id = project.id;
+  stream = new EventSource(`${engineBase}/api/v1/projects/${encodeURIComponent(id)}/stream`);
+  const onEvent = (e) => { log(`live: ${e.type}${e.lastEventId ? ` #${e.lastEventId}` : ''}`); void act('counter', () => controller.refreshCounter()); };
+  stream.addEventListener('burn', onEvent);
+  stream.addEventListener('mutation', onEvent);
+  stream.onerror = () => { /* EventSource reconnects by itself with Last-Event-ID; the poll covers the gap */ };
+}
+$('project').addEventListener('change', () => openStream());
+openStream();
 window.__burn = { get controller() { return controller; }, registry }; // for the automated browser test
 log('ready');

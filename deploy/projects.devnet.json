@@ -1,0 +1,66 @@
+{
+  "projects": [
+    {
+      "id": "wt-spl",
+      "name": "Test SPL",
+      "ticker": "TSPL",
+      "cluster": "devnet",
+      "mint": "JavPUxNCvP2cNtboV7TPZfuBs9TnfyzAVJdo5pEiMmx",
+      "decimals": 6,
+      "tokenProgram": "spl-token",
+      "levels": [
+        {
+          "id": "l0",
+          "name": "Dormant",
+          "threshold": "0"
+        },
+        {
+          "id": "l1",
+          "name": "Awake",
+          "threshold": "5"
+        },
+        {
+          "id": "l2",
+          "name": "Mutated",
+          "threshold": "50"
+        },
+        {
+          "id": "l3",
+          "name": "Evolved",
+          "threshold": "500"
+        }
+      ]
+    },
+    {
+      "id": "wt-t22",
+      "name": "Test Token-2022",
+      "ticker": "TT22",
+      "cluster": "devnet",
+      "mint": "5FWie4H5xEA8t74rH3vMYTRHKTZdaSqecvTT1ZuuLQst",
+      "decimals": 6,
+      "tokenProgram": "token-2022",
+      "levels": [
+        {
+          "id": "l0",
+          "name": "Dormant",
+          "threshold": "0"
+        },
+        {
+          "id": "l1",
+          "name": "Awake",
+          "threshold": "5"
+        },
+        {
+          "id": "l2",
+          "name": "Mutated",
+          "threshold": "50"
+        },
+        {
+          "id": "l3",
+          "name": "Evolved",
+          "threshold": "500"
+        }
+      ]
+    }
+  ]
+}

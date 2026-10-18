@@ -24,6 +24,8 @@
     "web:build": "tsc -p tsconfig.web.json",
     "web:serve": "node scripts/wallet-test/server.ts",
     "web:build:all": "tsc -p tsconfig.web.json && tsc -p tsconfig.serve.json",
+    "build:replit": "npm run build && npm run web:build:all",
+    "replit:start": "node web/serve-dist/scripts/replit/supervisor.js",
     "web:start": "node web/serve-dist/scripts/wallet-test/server.js",
     "web:setup": "node scripts/wallet-test/setup.ts",
     "web:browser-test": "node scripts/wallet-test/browser-test.ts",
