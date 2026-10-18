@@ -5,3 +5,4 @@ export * from './core/ledger.ts';
 export * from './config/schema.ts';
 export * from './config/registry.ts';
 export * from './chain/burn-parser.ts';
+export * from './chain/rpc.ts';

@@ -97,6 +97,9 @@ Exécution TypeScript native de Node (type stripping), tests avec le runner int�
 ## D15 — `getTransaction` : `encoding: "json"` et `maxSupportedTransactionVersion: 1` — ACTÉ (constat Devnet)
 Constaté sur Devnet le 2026-10-18 : des transactions **de version 1** existent déjà ; avec `maxSupportedTransactionVersion: 0` le RPC répond l'erreur `-32015` pour tout bloc/transaction en contenant. Le client RPC devra donc demander `1`, et traiter `-32015` comme un signal « version non supportée » (alerte + arrêt de l'avancée du curseur), jamais comme « transaction absente ». Le parseur accepte `legacy`, `0`, `1` et refuse toute autre version (`malformed`) plutôt que de deviner un format inconnu. La disposition des instructions d'une vraie transaction v1 a été vérifiée (fixture).
 
+## D16 — Client RPC (`src/chain/rpc.ts`) — ACTÉ
+`fetch` injectable. Réessaie seulement les pannes transitoires (réseau, timeout, HTTP 429/5xx, RPC `-32005`, corps non JSON) avec backoff exponentiel plafonné et `Retry-After` (≤ 30 s) ; max 4 retries. `-32015` → `RpcUnsupportedVersionError`, jamais réessayé ni confondu avec « introuvable ». `getTransaction` renvoie `null` quand le nœud n'a pas la transaction à ce commitment (l'indexeur devra réessayer, pas conclure « pas de burn »). Les messages d'erreur n'incluent jamais l'URL (clé API) ni le texte brut du nœud.
+
 ---
 
 ## E1 — Expérience : l'historique des signatures du mint suffit-il à découvrir tous les burns ?
