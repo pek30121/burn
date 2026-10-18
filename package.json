@@ -23,6 +23,8 @@
     "devnet:wallet-flow": "node scripts/devnet/wallet-flow.ts",
     "web:build": "tsc -p tsconfig.web.json",
     "web:serve": "node scripts/wallet-test/server.ts",
+    "web:build:all": "tsc -p tsconfig.web.json && tsc -p tsconfig.serve.json",
+    "web:start": "node web/serve-dist/scripts/wallet-test/server.js",
     "web:setup": "node scripts/wallet-test/setup.ts",
     "web:browser-test": "node scripts/wallet-test/browser-test.ts",
     "mainnet:scan": "node scripts/mainnet/scan.ts",

@@ -1,0 +1,21 @@
+{
+  "cluster": "devnet",
+  "rpcUrl": "/rpc",
+  "engineBase": "",
+  "projects": [
+    {
+      "id": "wt-spl",
+      "name": "Test SPL",
+      "mint": "JavPUxNCvP2cNtboV7TPZfuBs9TnfyzAVJdo5pEiMmx",
+      "tokenProgram": "spl-token",
+      "decimals": 6
+    },
+    {
+      "id": "wt-t22",
+      "name": "Test Token-2022",
+      "mint": "5FWie4H5xEA8t74rH3vMYTRHKTZdaSqecvTT1ZuuLQst",
+      "tokenProgram": "token-2022",
+      "decimals": 6
+    }
+  ]
+}

@@ -85,3 +85,21 @@ test('[web] the engine proxy is GET only and read-only; static files cannot esca
     assert.deepEqual(await (await fetch(`${s.base}/config.json`)).json(), { cluster: 'devnet', rpcUrl: '/rpc', engineBase: '', projects: [] });
   } finally { await s.close(); }
 });
+
+test('[web] behind a reverse proxy the rate limit is per forwarded client, and the header is ignored unless trusted', async () => {
+  const build = async (trustProxy: boolean) => {
+    const server = createWebServer({ upstreamRpc: 'http://up.local', engineUrl: 'http://engine.local', ratePerMinute: 2, trustProxy, fetch: (async () => new Response('{"jsonrpc":"2.0","id":1,"result":1}')) as typeof fetch });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    return { server, base: `http://127.0.0.1:${(server.address() as { port: number }).port}` };
+  };
+  const call = (base: string, ip: string) => fetch(`${base}/rpc`, { method: 'POST', headers: { 'x-forwarded-for': ip }, body: '{"jsonrpc":"2.0","id":1,"method":"getBalance","params":[]}' }).then((r) => r.status);
+  const trusted = await build(true);
+  try {
+    assert.deepEqual([await call(trusted.base, '1.1.1.1'), await call(trusted.base, '1.1.1.1'), await call(trusted.base, '1.1.1.1'), await call(trusted.base, '2.2.2.2')], [200, 200, 429, 200]);
+  } finally { trusted.server.closeAllConnections(); trusted.server.close(); }
+  const direct = await build(false);
+  try {
+    // spoofing X-Forwarded-For must not give a client a fresh bucket when the proxy is not trusted
+    assert.deepEqual([await call(direct.base, '1.1.1.1'), await call(direct.base, '2.2.2.2'), await call(direct.base, '3.3.3.3')], [200, 200, 429]);
+  } finally { direct.server.closeAllConnections(); direct.server.close(); }
+});

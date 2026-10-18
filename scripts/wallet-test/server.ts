@@ -7,8 +7,11 @@
  *   /api, /health   reverse proxy (GET) to the engine's public read-only API, so the page needs a single origin.
  *
  * Env: HELIUS_API_KEY or WEB_UPSTREAM_RPC_URL (upstream), ENGINE_URL (default http://127.0.0.1:8787),
- *      WEB_PORT (8788), WEB_HOST (127.0.0.1; use 0.0.0.0 on a LAN), WEB_RATE_PER_MINUTE (120). */
+ *      WEB_PORT (8788; PORT is used when WEB_PORT is unset), WEB_HOST (127.0.0.1; use 0.0.0.0 on a LAN / hosting),
+ *      WEB_RATE_PER_MINUTE (120), WEB_TRUST_PROXY=1 (behind a reverse proxy), WEB_CONFIG_FILE (served as /config.json),
+ *      WEB_ROOT (the web/ directory, when running the compiled copy from elsewhere). */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { existsSync, readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize, sep } from 'node:path';
 import { GENESIS_HASHES } from '../../src/chain/rpc.ts';
@@ -19,7 +22,11 @@ export const RPC_ALLOWLIST = new Set([
 ]);
 const MAX_BODY = 64 * 1024;
 const TYPES: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json', '.css': 'text/css' };
-const ROOT = new URL('../../web/', import.meta.url).pathname;
+/** The `web/` directory: from the sources (scripts/wallet-test/) or from the compiled copy (web/serve-dist/scripts/wallet-test/). */
+const ROOT = [process.env.WEB_ROOT, new URL('../../web/', import.meta.url).pathname, new URL('../../../', import.meta.url).pathname]
+  .filter((d): d is string => !!d)
+  .map((d) => (d.endsWith(sep) ? d : d + sep))
+  .find((d) => existsSync(join(d, 'wallet-test', 'index.html'))) ?? new URL('../../web/', import.meta.url).pathname;
 
 export interface WebServerOptions {
   upstreamRpc: string;
@@ -27,8 +34,10 @@ export interface WebServerOptions {
   ratePerMinute?: number;
   fetch?: typeof fetch;
   now?: () => number;
-  /** Served as /config.json instead of the file (tests). */
+  /** Served as /config.json instead of the file (tests, deployment). */
   config?: unknown;
+  /** Behind a reverse proxy (e.g. Replit): rate-limit by the first X-Forwarded-For address instead of the proxy's. */
+  trustProxy?: boolean;
 }
 
 const redact = (s: string) => s.replace(/api-key=[^&\s"']+/gi, 'api-key=***');
@@ -100,7 +109,8 @@ export function createWebServer(o: WebServerOptions) {
     void (async () => {
       try {
         const url = new URL(req.url ?? '/', 'http://localhost');
-        const ip = req.socket.remoteAddress ?? '?';
+        const forwarded = o.trustProxy ? String(req.headers['x-forwarded-for'] ?? '').split(',')[0]?.trim() : '';
+        const ip = forwarded || (req.socket.remoteAddress ?? '?');
         if (url.pathname === '/rpc' || url.pathname.startsWith('/api/')) if (limited(ip)) return json(res, 429, { error: 'rate limited' });
         if (url.pathname === '/rpc') return await rpcProxy(req, res);
         if (url.pathname === '/config.json' && o.config !== undefined) return json(res, 200, o.config);
@@ -119,8 +129,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const upstream = process.env.WEB_UPSTREAM_RPC_URL ?? (key ? `https://devnet.helius-rpc.com/?api-key=${key}` : 'https://api.devnet.solana.com');
   const genesis = (await (await fetch(upstream, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getGenesisHash' }) })).json() as { result?: string }).result;
   if (genesis !== GENESIS_HASHES.devnet) throw new Error('refusing to start: the upstream RPC is not Solana Devnet');
-  const port = Number(process.env.WEB_PORT ?? 8788);
+  const port = Number(process.env.WEB_PORT ?? process.env.PORT ?? 8788);
   const host = process.env.WEB_HOST ?? '127.0.0.1';
-  const server = createWebServer({ upstreamRpc: upstream, engineUrl: process.env.ENGINE_URL ?? 'http://127.0.0.1:8787', ratePerMinute: Number(process.env.WEB_RATE_PER_MINUTE ?? 120) });
+  const server = createWebServer({ upstreamRpc: upstream, engineUrl: process.env.ENGINE_URL ?? 'http://127.0.0.1:8787', ratePerMinute: Number(process.env.WEB_RATE_PER_MINUTE ?? 120), trustProxy: process.env.WEB_TRUST_PROXY === '1',
+    ...(process.env.WEB_CONFIG_FILE ? { config: JSON.parse(readFileSync(process.env.WEB_CONFIG_FILE, 'utf8')) } : {}) });
   server.listen(port, host, () => console.log(`wallet test page: http://${host === '0.0.0.0' ? 'localhost' : host}:${port}/  (RPC: ${process.env.WEB_UPSTREAM_RPC_URL ? 'custom upstream' : key ? 'Helius Devnet' : 'public Devnet'} via /rpc, key never sent to the browser; engine: ${process.env.ENGINE_URL ?? 'http://127.0.0.1:8787'})`));
 }

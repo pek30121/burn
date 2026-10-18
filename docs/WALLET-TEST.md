@@ -60,5 +60,8 @@ iOS Safari has no wallet extensions. Phantom and Solflare each have an **in-app 
 4. Stop the tunnel when finished: while it runs, anyone with the URL can use the rate-limited, Devnet-only, allowlisted `/rpc`.
 The same page works on a desktop browser with the extensions at `http://127.0.0.1:8788/` (no tunnel).
 
+## Hosted on Replit (no computer, no engine, no secret)
+`.replit` + `deploy/` deploy only the page and its `/rpc` proxy, pointed at the **public Devnet RPC** (no Helius key). `deploy/wallet-test-config.json` lists the public mints of the two Devnet test tokens. Verified here in a real Chromium against `npm run web:start` (compiled copy, public Devnet RPC, no engine): connect, balance, real fee and simulation, burn of 4 tokens finalized on Devnet, balance refreshed. **The Replit import and deployment themselves were not run by me.** Steps for the user are in the hand-off message; the engine-confirmation step ("COMPTÉ par le moteur") cannot be shown there since no engine runs.
+
 ## Tests
 `npm run check` (includes `tests/web-server.test.ts`: proxy allowlist, key never returned, rate limit, path traversal) and `npm run web:browser-test` (network + Devnet + PostgreSQL; not part of `npm test`).

@@ -69,6 +69,7 @@ async function newController(reconnect) {
 
 const lamports = (v) => (v === null || v === undefined ? '—' : `${(Number(v) / 1e9).toFixed(6)} SOL`);
 let lastErr = '';
+let refreshedFor = null;
 function render(s) {
   $('status').textContent = s.status;
   $('account').textContent = s.account ?? '—';
@@ -103,6 +104,8 @@ function render(s) {
   $('level').textContent = e ? `${e.levelName || e.levelId}` : '—';
   $('errBox').hidden = !s.error;
   $('err').textContent = s.error ? `${s.error.code}: ${s.error.message}${s.error.detail ? ` (${s.error.detail})` : ''}` : '';
+  // Once the transaction is finalized the on-chain balance is final: show it without waiting for the engine (which may be absent).
+  if (s.tx.phase === 'finalized' && s.tx.signature && refreshedFor !== s.tx.signature && s.status === 'finalized') { refreshedFor = s.tx.signature; setTimeout(() => void act('refresh', () => controller.refresh()), 500); }
   const key = `${s.status}|${s.tx.phase}|${s.engine.phase}|${s.error?.code ?? ''}|${s.account ?? ''}`;
   if (key !== lastErr) { lastErr = key; log(`state ${key}`); }
 }

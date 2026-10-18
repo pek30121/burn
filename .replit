@@ -1,0 +1,21 @@
+# Replit: deploys ONLY the Devnet wallet test page (no engine, no database, no secret).
+modules = ["nodejs-20"]
+run = "npm install --no-audit --no-fund && npm run web:build:all && npm run web:start"
+
+[env]
+WEB_HOST = "0.0.0.0"
+WEB_PORT = "8080"
+WEB_TRUST_PROXY = "1"
+WEB_CONFIG_FILE = "deploy/wallet-test-config.json"
+
+[nix]
+channel = "stable-24_05"
+
+[deployment]
+deploymentTarget = "autoscale"
+build = ["sh", "-c", "npm install --no-audit --no-fund && npm run web:build:all"]
+run = ["sh", "-c", "npm run web:start"]
+
+[[ports]]
+localPort = 8080
+externalPort = 80
