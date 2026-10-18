@@ -163,7 +163,7 @@ export async function startEngine(cfg: EngineConfig, deps: EngineDeps): Promise<
           plog.info('mint_program_verified', { tokenProgram: project.tokenProgram });
         },
       } : {}),
-      reconcileIntervalMs: project.initialSupplyRaw !== null && project.startSlot === 0 ? cfg.reconcileIntervalMs : 0,
+      reconcileIntervalMs: cfg.reconcileIntervalMs, // also for projects that cannot be proven: the check returns at once, without any RPC call, and records the public reason
     }));
   }
 

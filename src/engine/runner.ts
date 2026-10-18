@@ -53,6 +53,7 @@ export class ProjectRunner {
   #held = false;
   #seenIssues: Set<string> | null = null;
   #lastReconcile = Number.NEGATIVE_INFINITY;
+  #reconcileSoon = false;
   #lastVerification = '';
   #preflightDone = false;
 
@@ -97,6 +98,7 @@ export class ProjectRunner {
             continue;
           }
           await this.#succeeded(res);
+          if (res.burnsRecorded + res.burnsPromoted > 0) this.#reconcileSoon = true; // re-prove soon after new burns, not 5 minutes later
           if (!res.moreWork) await this.#maybeReconcile();
           if (res.moreWork) await new Promise<void>((r) => setImmediate(r)); // the shared limiter paces the requests
           else {
@@ -154,16 +156,19 @@ export class ProjectRunner {
     const { indexer, log } = this.#o;
     const every = this.#o.reconcileIntervalMs ?? 0;
     const nowMs = (this.#o.now ?? (() => new Date()))().getTime();
-    if (!indexer.reconcile || every <= 0 || nowMs - this.#lastReconcile < every) return;
+    const sinceLast = nowMs - this.#lastReconcile;
+    const due = sinceLast >= every || (this.#reconcileSoon && sinceLast >= Math.min(every, 30_000)); // at most one extra proof per 30 s
+    if (!indexer.reconcile || every <= 0 || !due) return;
     this.#lastReconcile = nowMs;
+    this.#reconcileSoon = false;
     try {
       const v = await indexer.reconcile();
-      const key = JSON.stringify(v);
+      const key = JSON.stringify({ ...v, at: undefined }); // the check time changes every run: report verdict changes only
       if (key === this.#lastVerification) return; // report changes, not every check
       this.#lastVerification = key;
       if (v.status === 'verified') log.info('supply_verified', { burnedRaw: v.burnedRaw });
       else if (v.status === 'mismatch') log.error('supply_mismatch', { expectedBurnedRaw: v.expectedBurnedRaw, indexedBurnedRaw: v.indexedBurnedRaw });
-      else log.info('supply_unverified', { reason: v.reason });
+      else log.info('supply_unverified', { reason: v.reason, code: v.code });
     } catch (e) {
       log.warn('reconcile_failed', { error: describe(e) });
     }

@@ -29,11 +29,26 @@ export interface IndexIssue {
   readonly detail: string;
 }
 
-/** Only `verified` means the indexed total is proven to match the chain. Amounts are decimal strings. */
+/** Why a project is not (or no longer) proven. Stable, public-safe codes: the free-text `reason` stays internal. */
+export type UnverifiedCode =
+  | 'history_not_read'
+  | 'history_incomplete'
+  | 'initial_supply_not_configured'
+  | 'start_slot_not_zero'
+  | 'mint_authority_active' // the supply can grow: initialSupply - supply proves nothing
+  | 'unsupported_mint_extension' // e.g. Token-2022 ConfidentialMintBurn: burns this engine cannot see
+  | 'native_mint' // wrapped SOL: the supply moves with wrapping, not with mint/burn
+  | 'mint_unreadable'
+  | 'decimals_mismatch'
+  | 'indexed_changed' // burns were indexed since the last proof; the next check re-proves
+  | 'chain_moving'
+  | 'sync_failed';
+
+/** Only `verified` means the indexed total is proven to match the chain. Amounts are decimal strings. `at` = when it was checked (ISO). */
 export type Verification =
-  | { readonly status: 'unverified'; readonly reason: string }
-  | { readonly status: 'verified'; readonly burnedRaw: string }
-  | { readonly status: 'mismatch'; readonly expectedBurnedRaw: string; readonly indexedBurnedRaw: string };
+  | { readonly status: 'unverified'; readonly reason: string; readonly code?: UnverifiedCode }
+  | { readonly status: 'verified'; readonly burnedRaw: string; readonly at?: string }
+  | { readonly status: 'mismatch'; readonly expectedBurnedRaw: string; readonly indexedBurnedRaw: string; readonly at?: string };
 
 export interface IndexState {
   /** Newest finalized signature such that everything older (down to the backfill range) is processed. */
@@ -52,7 +67,7 @@ export const emptyState = (): IndexState => ({
   backfillBefore: null,
   backfill: 'pending',
   issues: [],
-  verification: { status: 'unverified', reason: 'history not read yet' },
+  verification: { status: 'unverified', reason: 'history not read yet', code: 'history_not_read' },
 });
 
 export interface Totals {

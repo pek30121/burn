@@ -86,7 +86,15 @@ export function dataState(state: IndexState, runner: RunnerSnapshot | null) {
   return {
     state: blocking.length ? ('incomplete' as const) : ('synced' as const),
     reasons,
-    history: { backfill: state.backfill, verification: state.verification.status, complete: state.verification.status === 'verified' },
+    history: {
+      backfill: state.backfill,
+      verification: state.verification.status,
+      complete: state.verification.status === 'verified',
+      // Public, stable code explaining a non-proven state (never the internal free-text reason); null when proven.
+      reason: state.verification.status === 'verified' ? null : state.verification.status === 'mismatch' ? 'supply_mismatch' : (state.verification.code ?? 'history_not_read'),
+      // When the proof (or the mismatch) was last computed; null if never.
+      verifiedAt: state.verification.status === 'unverified' ? null : (state.verification.at ?? null),
+    },
     issues: { count: state.issues.length, codes },
     lastFinalizedSlot: state.finalizedHeadSlot,
     lastSyncAt: runner?.lastSyncAt ?? null,

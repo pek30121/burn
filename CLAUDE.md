@@ -32,6 +32,7 @@ Moteur universel de burn/progression pour tokens SPL Solana (Pump.fun en priorit
 
 - Wallet : le compteur ne bouge que sur un burn listé par le journal du moteur (jamais sur une signature envoyée) ; le module ne signe jamais ; extensions Token-2022 inconnues = bloquées. Identifiants de programmes : toujours vérifiés contre des données on-chain réelles (D23).
 - H2 (D25) : `tokenProgram` doit être le propriétaire on-chain du mint, sinon refus de démarrer ; le transport en lot (D26) ne remplace jamais la découverte par `getSignaturesForAddress` et se replie sur `getTransaction` ; la surveillance de quota (D27) reste une estimation locale.
+- Preuve par la supply (D32) : jamais « prouvé » avec une autorité de mint active, `ConfidentialMintBurn` ou le mint SOL natif ; `history.reason` expose un code public, jamais le texte interne ; les incidents de contenu ne s'effacent jamais seuls.
 - La clé Helius du moteur ne doit jamais être utilisée par un navigateur.
 
 ## Conventions de code

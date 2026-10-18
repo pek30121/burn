@@ -385,7 +385,9 @@ test('[engine] REGRESSION: the engine now runs the supply check, so completeness
   try {
     await waitFor(async () => (await projectStatus(b, 'alpha')).indexer?.verification.status === 'verified', 'verified');
     const s = (await projectStatus(b, 'alpha')).indexer!;
-    assert.deepEqual([s.complete, s.verification], [true, { status: 'verified', burnedRaw: '500' }]);
+    assert.equal(s.complete, true);
+    assert.deepEqual({ ...s.verification, at: undefined }, { status: 'verified', burnedRaw: '500', at: undefined });
+    assert.ok(typeof (s.verification as any).at === 'string');
     assert.equal(b.ev('supply_verified', 'alpha').length, 1);
     chain.add({ slot: 50, burns: [40n] });
     await waitFor(() => b.ev('supply_verified', 'alpha').length === 2, 'verified again after a new burn');
@@ -588,5 +590,43 @@ test('[engine][quota] a tiny quota raises ONE critical alert, status exposes the
     assert.equal((await none.engine.status()).quota, undefined, 'no watch unless RPC_MONTHLY_CREDITS is set');
   } finally {
     await none.engine.stop();
+  }
+});
+
+/* ------------------------------ C1/C2 in the running engine ------------------------------ */
+
+test('[engine][C1] a mint whose authority is still active is never proven: stable code in the status, no supply request, and the proof comes once it is revoked', opts, async () => {
+  const db = await bareSchema();
+  const chain = chainWith(4, 0);
+  chain.mintAuthority = 'AuthorityAuthorityAuthorityAuthority11111';
+  const hooks = newHooks();
+  const b = await boot(db, chain, hooks, { projects: withSupply, over: { reconcileIntervalMs: 40 } });
+  try {
+    await waitFor(async () => ((await projectStatus(b, 'alpha')).indexer?.verification as any)?.code === 'mint_authority_active', 'authority code');
+    await sleep(200);
+    const s = (await projectStatus(b, 'alpha')).indexer!;
+    assert.equal(s.complete, false);
+    assert.equal(count(hooks, 'getTokenSupply'), 0, 'no meaningless comparison is made');
+    assert.equal(b.ev('supply_verified', 'alpha').length, 0);
+    chain.mintAuthority = null; // revoked on-chain
+    await waitFor(async () => (await projectStatus(b, 'alpha')).indexer?.verification.status === 'verified', 'verified once revoked');
+    assert.equal((await projectStatus(b, 'alpha')).indexer!.complete, true);
+  } finally {
+    await b.engine.stop();
+  }
+});
+
+test('[engine][C2] a project that can never be proven says why (public code) instead of staying at "history not read yet", at no RPC cost', opts, async () => {
+  const db = await bareSchema();
+  const hooks = newHooks();
+  const b = await boot(db, chainWith(3, 0), hooks, { over: { reconcileIntervalMs: 40 } }); // alpha and beta without initialSupply
+  try {
+    await waitFor(async () => ((await projectStatus(b, 'alpha')).indexer?.verification as any)?.code === 'initial_supply_not_configured', 'reason recorded');
+    await sleep(250);
+    assert.equal(count(hooks, 'getTokenSupply'), 0);
+    assert.equal(count(hooks, 'getMintInfo'), 0);
+    assert.equal(hooks.requests.filter((r) => r.method === 'getAccountInfo' && r.address === MINT_A).length <= 1, true, 'only the start-up owner check (H2)');
+  } finally {
+    await b.engine.stop();
   }
 });

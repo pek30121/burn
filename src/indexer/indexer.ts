@@ -19,9 +19,10 @@ import { RpcError, RpcUnsupportedVersionError, type SignatureInfo, type SolanaRp
 import type { ProjectConfig } from '../config/schema.ts';
 import type { Commitment, LevelReachedEvent } from '../core/ledger.ts';
 import { computeProgress, type Progress } from '../core/progression.ts';
-import type { IndexIssue, IndexState, IndexerStore, IssueCode, Totals, Verification } from './store.ts';
+import { EXT } from '../wallet/token-info.ts';
+import type { IndexIssue, IndexState, IndexerStore, IssueCode, Totals, UnverifiedCode, Verification } from './store.ts';
 
-export type ChainRpc = Pick<SolanaRpc, 'getSignaturesForAddress' | 'getTransaction' | 'getTokenSupply'> & Partial<Pick<SolanaRpc, 'getTransactionsForAddress'>>;
+export type ChainRpc = Pick<SolanaRpc, 'getSignaturesForAddress' | 'getTransaction' | 'getTokenSupply' | 'getMintInfo'> & Partial<Pick<SolanaRpc, 'getTransactionsForAddress'>>;
 
 export interface IndexerOptions {
   readonly project: ProjectConfig;
@@ -87,6 +88,11 @@ const BULK_CHUNK = 1000;
 
 const describe = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+/** Wrapped SOL (Token and Token-2022 native mints): the supply moves with wrapping, never with mint/burn instructions. */
+const NATIVE_MINTS: ReadonlySet<string> = new Set(['So11111111111111111111111111111111111111112', '9pan9bMn5HatX4EJdBwg9VgCa7Uz5HL8N1m5D3NdXejP']);
+
+const unverified = (code: UnverifiedCode, reason: string): Verification => ({ status: 'unverified', reason, code });
+
 export class Indexer {
   readonly project: ProjectConfig;
   readonly #rpc: ChainRpc;
@@ -145,8 +151,15 @@ export class Indexer {
         r.error = describe(e);
         this.#log(`sync stopped: ${r.error}`);
       }
+      // A sync that read the tail and the backfill page without error resolves the incidents that only meant "could not list / catch up":
+      // keeping them forever would show `incomplete` on a project that is fully caught up (and proven by the supply check).
+      if (r.error === null && this.#state.issues.some((i) => i.code === 'tail_gap_too_large' || i.code === 'history_inconsistent')) {
+        this.#state.issues = this.#state.issues.filter((i) => i.code !== 'tail_gap_too_large' && i.code !== 'history_inconsistent');
+        this.#log('resolved: tail gap / history inconsistency (a full sync completed)');
+        await this.#save();
+      }
       if ((r.burnsRecorded > 0 || r.burnsPromoted > 0 || r.burnsDropped > 0) && this.#state.verification.status !== 'unverified') {
-        this.#state.verification = { status: 'unverified', reason: 'indexed burns changed since the last reconciliation' };
+        this.#state.verification = unverified('indexed_changed', 'indexed burns changed since the last reconciliation');
         await this.#save();
       }
       await this.#flushEvents(r);
@@ -186,33 +199,50 @@ export class Indexer {
   }
 
   /**
-   * The only completeness proof available: with minting disabled,
-   * initialSupply − currentSupply must equal the finalized burns indexed.
-   * Supply is read BEFORE a catch-up sync; if that sync still finds new burns the
-   * supply reading is stale and the check is retried. Never trust a mismatch-free
-   * run that was not able to compare (those return `unverified` with a reason).
+   * The only completeness proof available, valid only while the supply can ONLY fall by burns: the mint authority is revoked
+   * (checked here, on-chain, at every proof), the mint is not the wrapped-SOL mint, and it has no Token-2022 confidential
+   * mint/burn (burns this engine cannot see). Then initialSupply − currentSupply must equal the finalized burns indexed.
+   * Supply is read BEFORE a catch-up sync; if that sync still finds new burns the supply reading is stale and the check is
+   * retried. Never trust a mismatch-free run that was not able to compare: those return `unverified` with a reason and a
+   * stable public `code`.
    */
   async reconcile(): Promise<Verification> {
     const p = this.project;
     const set = async (v: Verification): Promise<Verification> => {
       this.#state = await this.#store.loadState(p.id);
-      this.#state.verification = v;
-      await this.#save();
-      return v;
+      const stamped: Verification = v.status === 'unverified' ? v : { ...v, at: new Date().toISOString() };
+      const before = this.#state.verification;
+      // Same unverified verdict as already stored: no write (this runs periodically, also for projects that can never be proven).
+      if (!(stamped.status === 'unverified' && before.status === 'unverified' && before.code === stamped.code && before.reason === stamped.reason)) {
+        this.#state.verification = stamped;
+        await this.#save();
+      }
+      return stamped;
     };
-    if (p.initialSupplyRaw === null) return set({ status: 'unverified', reason: 'initialSupply is not configured for this project' });
-    if (p.startSlot !== 0) return set({ status: 'unverified', reason: 'reconciliation needs startSlot 0 (counting from creation)' });
+    if (p.initialSupplyRaw === null) return set(unverified('initial_supply_not_configured', 'initialSupply is not configured for this project'));
+    if (p.startSlot !== 0) return set(unverified('start_slot_not_zero', 'reconciliation needs startSlot 0 (counting from creation)'));
+    if (NATIVE_MINTS.has(p.mint)) return set(unverified('native_mint', 'the wrapped-SOL mint: its supply moves with wrapping, not with burns'));
+
+    // Soundness of the proof itself (D8): re-read on-chain each time, an authority can be revoked later but never trusted blindly.
+    const mint = await this.#rpc.getMintInfo(p.mint, 'finalized');
+    if (mint.decimals !== p.decimals) return set(unverified('decimals_mismatch', `on-chain decimals ${mint.decimals} differ from configured ${p.decimals}`));
+    if (mint.mintAuthority !== null) {
+      return set(unverified('mint_authority_active', 'the mint authority is still active: the supply can grow, so initialSupply − supply cannot prove completeness'));
+    }
+    if (mint.extensions.some((e) => e.type === EXT.ConfidentialMintBurn)) {
+      return set(unverified('unsupported_mint_extension', 'the mint has the Token-2022 confidential mint/burn extension: some burns are invisible to this engine'));
+    }
 
     for (let attempt = 0; attempt < 3; attempt++) {
       const supply = await this.#rpc.getTokenSupply(p.mint, 'finalized');
       if (supply.decimals !== p.decimals) {
-        return set({ status: 'unverified', reason: `on-chain decimals ${supply.decimals} differ from configured ${p.decimals}` });
+        return set(unverified('decimals_mismatch', `on-chain decimals ${supply.decimals} differ from configured ${p.decimals}`));
       }
       const res = await this.syncOnce();
-      if (res.error !== null) return set({ status: 'unverified', reason: `sync failed: ${res.error}` });
+      if (res.error !== null) return set(unverified('sync_failed', `sync failed: ${res.error}`));
       const state = await this.#store.loadState(p.id);
       if (state.backfill !== 'done_exhausted' && state.backfill !== 'done_start_slot') {
-        return set({ status: 'unverified', reason: 'history is still being read' });
+        return set(unverified('history_incomplete', 'history is still being read'));
       }
       if (res.burnsRecorded > 0 || res.burnsPromoted > 0) continue; // chain moved after the supply reading
       const indexed = (await this.#store.totals(p.id)).finalizedRaw;
@@ -223,7 +253,7 @@ export class Indexer {
           : { status: 'mismatch', expectedBurnedRaw: expected.toString(), indexedBurnedRaw: indexed.toString() },
       );
     }
-    return set({ status: 'unverified', reason: 'new burns kept arriving during the check; retry' });
+    return set(unverified('chain_moving', 'new burns kept arriving during the check; retry'));
   }
 
   /* ------------------------------------------------------------------ */
@@ -231,7 +261,7 @@ export class Indexer {
   async #init(r: SyncResult): Promise<void> {
     const page = await this.#fetchPage({ commitment: 'finalized' });
     if (page.length === 0) {
-      this.#state.verification = { status: 'unverified', reason: 'the node returned no signatures for this mint' };
+      this.#state.verification = unverified('history_incomplete', 'the node returned no signatures for this mint');
       await this.#save();
       return;
     }

@@ -336,3 +336,29 @@ test('the server answers after errors and closes cleanly (no leftover connection
   await assert.rejects(get(`${api.url}/health/live`)); // port released
   await waitUntil(() => api.api.stats().sse.connections === 0, 'no connections');
 });
+
+test('history trust state: a stable public reason code and the proof time, never the internal free text', async () => {
+  await withApi(async ({ src, url }) => {
+    const history = async () => (await get(`${url}/api/v1/projects/alpha/status`)).json.data.history;
+    const st = src.states.get('alpha')!;
+    // states stored before codes existed (no `code`) read as "not read yet", not as an error
+    st.verification = { status: 'unverified', reason: 'internal text that must never be public' };
+    let h = await history();
+    assert.deepEqual([h.verification, h.complete, h.reason, h.verifiedAt], ['unverified', false, 'history_not_read', null]);
+    st.verification = { status: 'unverified', reason: 'sync failed: connect ECONNREFUSED 10.0.0.5:5432 internal text', code: 'sync_failed' };
+    h = await history();
+    assert.equal(h.reason, 'sync_failed');
+    assert.doesNotMatch(JSON.stringify(h), /ECONNREFUSED|internal text|10\.0\.0\.5/);
+    for (const code of ['initial_supply_not_configured', 'mint_authority_active', 'unsupported_mint_extension', 'native_mint', 'indexed_changed', 'history_incomplete'] as const) {
+      st.verification = { status: 'unverified', reason: 'x', code };
+      assert.equal((await history()).reason, code);
+    }
+    st.verification = { status: 'verified', burnedRaw: '700', at: '2026-10-18T12:00:00.000Z' };
+    h = await history();
+    assert.deepEqual([h.verification, h.complete, h.reason, h.verifiedAt], ['verified', true, null, '2026-10-18T12:00:00.000Z']);
+    st.verification = { status: 'mismatch', expectedBurnedRaw: '140', indexedBurnedRaw: '100', at: '2026-10-18T12:05:00.000Z' };
+    h = await history();
+    assert.deepEqual([h.verification, h.complete, h.reason, h.verifiedAt], ['mismatch', false, 'supply_mismatch', '2026-10-18T12:05:00.000Z']);
+    assert.doesNotMatch(JSON.stringify(h), /expectedBurnedRaw|140/, 'the exact gap stays internal');
+  });
+});

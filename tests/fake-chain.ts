@@ -5,6 +5,7 @@ import { RpcError, RpcUnsupportedVersionError, type BatchPage, type BatchQuery, 
 import { K, baseKeys, burnIx, makeTx, rawData } from './chain-helpers.ts';
 import { MINT_A, MINT_B, randomSignature } from './helpers.ts';
 import type { Commitment } from '../src/core/ledger.ts';
+import type { MintInfo } from '../src/wallet/token-info.ts';
 
 interface FakeTx {
   sig: string;
@@ -32,7 +33,11 @@ export class FakeChain {
   txs: FakeTx[] = [];
   finalizedSlot = 0;
   initialSupply = 1_000_000_000_000n;
-  calls = { sigs: 0, tx: 0, supply: 0 };
+  calls: { sigs: number; tx: number; supply: number; mintInfo?: number } = { sigs: 0, tx: 0, supply: 0 };
+  /** The mint account as the node reports it (revoked authority, no extension by default: the case the supply proof is sound for). */
+  mintAuthority: string | null = null;
+  mintExtensions: { type: number; name: string; data: Uint8Array }[] = [];
+  mintDecimals = 6;
   nullFor = new Set<string>();
   versionErrorFor = new Set<string>();
   scramble = false;
@@ -136,6 +141,11 @@ export class FakeChain {
     }
     const next = start + size;
     return { transactions, returned: page.length, paginationToken: next < all.length ? String(next) : null };
+  }
+
+  async getMintInfo(_mint: string, _commitment: Commitment): Promise<MintInfo> {
+    this.calls.mintInfo = (this.calls.mintInfo ?? 0) + 1;
+    return { tokenProgram: 'spl-token', supplyRaw: this.initialSupply - this.burned(), decimals: this.mintDecimals, mintAuthority: this.mintAuthority, freezeAuthority: null, extensions: this.mintExtensions };
   }
 
   async getTokenSupply(_mint: string, _commitment: Commitment): Promise<{ amountRaw: bigint; decimals: number }> {

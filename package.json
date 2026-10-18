@@ -30,7 +30,8 @@
     "web:setup": "node scripts/wallet-test/setup.ts",
     "web:browser-test": "node scripts/wallet-test/browser-test.ts",
     "mainnet:scan": "node scripts/mainnet/scan.ts",
-    "mainnet:reconcile": "node scripts/mainnet/reconcile.ts"
+    "mainnet:reconcile": "node scripts/mainnet/reconcile.ts",
+    "mainnet:onboard": "node scripts/mainnet/onboard.ts"
   },
   "devDependencies": {
     "@types/node": "22.20.5",

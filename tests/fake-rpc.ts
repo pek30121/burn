@@ -38,7 +38,16 @@ export async function handleRpc(chain: FakeChain, hooks: RpcHooks, raw: string):
         return ok(hooks.genesis ?? 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG');
       case 'getAccountInfo': {
         const owner = hooks.owners && req.params[0] in hooks.owners ? hooks.owners[req.params[0]] : 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
-        return ok({ context: { slot: chain.finalizedSlot }, value: owner === null ? null : { owner, lamports: 1, executable: false, rentEpoch: 0, data: ['', 'base64'] } });
+        if (owner === null) return ok({ context: { slot: chain.finalizedSlot }, value: null });
+        // Full account data (the supply proof reads the mint): an 82-byte Token mint with a revoked authority; owner-only reads get no data.
+        const full = !req.params[1]?.dataSlice;
+        const mint = new Uint8Array(82);
+        const dv = new DataView(mint.buffer);
+        dv.setBigUint64(36, chain.initialSupply - chain.burned(), true);
+        if (chain.mintAuthority !== null) { dv.setUint32(0, 1, true); mint.fill(7, 4, 36); } // an active mint authority
+        mint[44] = chain.mintDecimals;
+        mint[45] = 1;
+        return ok({ context: { slot: chain.finalizedSlot }, value: { owner, lamports: 1, executable: false, rentEpoch: 0, data: [full ? Buffer.from(mint).toString('base64') : '', 'base64'] } });
       }
       case 'getSignaturesForAddress':
         return ok(await chain.getSignaturesForAddress(req.params[0], req.params[1]));

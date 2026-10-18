@@ -433,3 +433,33 @@ test('config (http): numeric limits are validated', async () => {
     assert.match(await issues(await env({ [k]: v })), new RegExp(k), k);
   }
 });
+
+async function reconcileTimes(burnOnSyncs: number[]): Promise<number[]> {
+  let t = 0;
+  let syncs = 0;
+  const times: number[] = [];
+  const ac = new AbortController();
+  const runner = new ProjectRunner({
+    projectId: 'p', store: {}, log: createLogger({ write: () => {} }), pollIntervalMs: 1, backoff: { baseMs: 1, maxMs: 2 }, leaseRetryMs: 1, reconcileIntervalMs: 300_000,
+    now: () => new Date(t),
+    indexer: {
+      syncOnce: async () => { syncs++; return { burnsRecorded: burnOnSyncs.includes(syncs) ? 1 : 0, burnsPromoted: 0, burnsDropped: 0, eventsDelivered: 0, moreWork: false, error: null, warnings: [] }; },
+      status: async () => { throw new Error('n/a'); },
+      reconcile: async () => { times.push(t); return { status: 'unverified', reason: 'x', code: 'indexed_changed' }; },
+    },
+    sleep: async () => { t += 10_000; if (syncs >= 12) ac.abort(); await new Promise((r) => setImmediate(r)); },
+  });
+  await runner.run(ac.signal);
+  return times;
+}
+
+test('runner: a quiet project is proven once, then only every interval (5 min)', async () => {
+  assert.deepEqual(await reconcileTimes([]), [0]);
+});
+
+test('runner: new burns bring the supply proof forward, but at most one extra proof per 30 s', async () => {
+  // burns on sync 3 (t=20 s): the proof follows at t=30 s (30 s after the previous one), not 5 minutes later
+  assert.deepEqual(await reconcileTimes([3]), [0, 30_000]);
+  // a burn on every sync cannot make it run on every sync
+  assert.deepEqual(await reconcileTimes([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]), [0, 30_000, 60_000, 90_000]);
+});

@@ -7,6 +7,7 @@
  * - Error messages never contain the endpoint URL, which usually embeds an API key. */
 
 import { isPublicKey, isSignature } from '../core/base58.ts';
+import { parseMint, TokenDataError, type MintInfo } from '../wallet/token-info.ts';
 import type { Commitment } from '../core/ledger.ts';
 
 export const MAX_SUPPORTED_TX_VERSION = 1;
@@ -116,6 +117,20 @@ export class SolanaRpc {
     if (v === null) return null;
     if (!v || typeof v.owner !== 'string' || !isPublicKey(v.owner)) throw new RpcError('getAccountInfo: malformed response');
     return v.owner;
+  }
+
+  /** The mint account decoded from its raw bytes (owner program, supply, decimals, authorities, Token-2022 extensions). */
+  async getMintInfo(mint: string, commitment: Commitment): Promise<MintInfo> {
+    const result = (await this.#call('getAccountInfo', [mint, { encoding: 'base64', commitment }])) as { value?: { owner?: unknown; data?: unknown } | null } | null;
+    const v = result?.value;
+    if (!v || typeof v.owner !== 'string' || !Array.isArray(v.data) || typeof v.data[0] !== 'string') throw new RpcError('getAccountInfo: the mint account is missing or malformed');
+    try {
+      const raw = atob(v.data[0]);
+      return parseMint(v.owner, Uint8Array.from(raw, (c) => c.charCodeAt(0)));
+    } catch (e) {
+      if (e instanceof TokenDataError || e instanceof DOMException) throw new RpcError('getAccountInfo: the account is not a readable token mint');
+      throw e;
+    }
   }
 
   /** Newest first, at most 1000 per call; follow with `before` = last signature of the page. */

@@ -12,6 +12,9 @@ const L1 = 1_000_000_000n; // raw threshold of level l1 (6 decimals)
 const alpha = parseProjectConfig(projectInput({ initialSupply: '1000000' })); // 1e12 raw
 const beta = parseProjectConfig(projectInput({ id: 'beta', mint: MINT_B }));
 
+/** A proof/mismatch carries the time it was computed (`at`): check it is a recent ISO date, then compare the rest. */
+const withoutAt = (v: any) => { assert.ok(v.at === undefined || Math.abs(Date.now() - Date.parse(v.at)) < 60_000, 'verification time is recent'); const { at, ...rest } = v; return rest; };
+
 export type StoreFactory = (projects: readonly ProjectConfig[]) => Promise<IndexerStore>;
 
 /** The behaviour every IndexerStore must give the indexer; run against each implementation. */
@@ -278,7 +281,8 @@ t('reconcile: verified only when initialSupply − supply equals the indexed bur
   fin(chain);
   await drain(ix);
   const v = await ix.reconcile();
-  assert.deepEqual(v, { status: 'verified', burnedRaw: '700' });
+  assert.deepEqual(withoutAt(v), { status: 'verified', burnedRaw: '700' });
+  assert.ok(typeof (v as any).at === 'string', 'the proof is time-stamped');
   assert.equal((await ix.status()).complete, true);
 
   chain.add({ slot: 20, burns: [30n] });
@@ -288,13 +292,113 @@ t('reconcile: verified only when initialSupply − supply equals the indexed bur
   assert.equal((await ix.reconcile()).status, 'verified');
 });
 
+t('C1: an ACTIVE mint authority makes the proof invalid: never "verified", with a stable public code (no supply is even read)', async () => {
+  const { chain, ix, store } = await setup();
+  for (let s = 1; s <= 4; s++) chain.add({ slot: s, burns: [100n] });
+  fin(chain);
+  chain.mintAuthority = 'AuthorityAuthorityAuthorityAuthority11111';
+  await drain(ix);
+  const v = await ix.reconcile();
+  assert.equal(v.status, 'unverified');
+  assert.equal((v as any).code, 'mint_authority_active');
+  assert.match((v as any).reason, /authority is still active/);
+  assert.equal(chain.calls.supply, 0, 'nothing is compared when the comparison would be meaningless');
+  assert.equal((await ix.status()).complete, false);
+  assert.equal((await store.loadState('alpha')).verification.status, 'unverified');
+  // the authority is revoked later: the next proof (re-checked on-chain each time) is accepted
+  chain.mintAuthority = null;
+  assert.equal((await ix.reconcile()).status, 'verified');
+  // ...and if it were ever active again, a stored "verified" is withdrawn
+  chain.mintAuthority = 'AuthorityAuthorityAuthorityAuthority11111';
+  assert.equal(((await ix.reconcile()) as any).code, 'mint_authority_active');
+  assert.equal((await ix.status()).complete, false);
+});
+
+t('C1: confidential mint/burn (invisible burns), the wrapped-SOL mint and a decimals mismatch are never proven either', async () => {
+  const a = await setup();
+  for (let s = 1; s <= 3; s++) a.chain.add({ slot: s, burns: [100n] });
+  fin(a.chain);
+  await drain(a.ix);
+  a.chain.mintExtensions = [{ type: 24, name: 'ConfidentialMintBurn', data: new Uint8Array(1) }];
+  assert.equal(((await a.ix.reconcile()) as any).code, 'unsupported_mint_extension');
+  a.chain.mintExtensions = [{ type: 18, name: 'MetadataPointer', data: new Uint8Array(64) }]; // harmless extensions do not block
+  assert.equal((await a.ix.reconcile()).status, 'verified');
+  a.chain.mintDecimals = 9;
+  assert.equal(((await a.ix.reconcile()) as any).code, 'decimals_mismatch');
+
+  const native = parseProjectConfig(projectInput({ id: 'native', mint: MINT_B, initialSupply: '1000000' }));
+  const store = await makeStore([native]);
+  const chain = new FakeChain();
+  const ix = new Indexer({ project: native, rpc: chain, store, pageSize: 3 });
+  assert.equal(((await ix.reconcile()) as any).code, 'native_mint');
+  assert.equal(chain.calls.mintInfo ?? 0, 0);
+});
+
+t('C2: every non-proven state carries a stable code; a proof and a mismatch carry the time they were computed', async () => {
+  const { chain, ix } = await setup();
+  assert.equal((await ix.status()).verification.status, 'unverified');
+  assert.equal(((await ix.status()).verification as any).code, 'history_not_read');
+  for (let s = 1; s <= 3; s++) chain.add({ slot: s, burns: [100n] });
+  chain.add({ slot: 4, burns: [7n], hidden: true });
+  fin(chain);
+  await drain(ix);
+  const mismatch = await ix.reconcile();
+  assert.equal(mismatch.status, 'mismatch');
+  assert.ok(Math.abs(Date.now() - Date.parse((mismatch as any).at)) < 60_000);
+  const noSupply = new Indexer({ project: parseProjectConfig(projectInput({ id: 'beta', mint: MINT_B })), rpc: chain, store: await makeStore([parseProjectConfig(projectInput({ id: 'beta', mint: MINT_B }))]), pageSize: 3 });
+  assert.equal(((await noSupply.reconcile()) as any).code, 'initial_supply_not_configured');
+  const late = parseProjectConfig(projectInput({ id: 'late', startSlot: 5, initialSupply: '1000000' }));
+  const lateIx = new Indexer({ project: late, rpc: chain, store: await makeStore([late]), pageSize: 3 });
+  assert.equal(((await lateIx.reconcile()) as any).code, 'start_slot_not_zero');
+  // burns indexed after a proof: the stale proof is withdrawn with an explicit code until the next check
+  const ok = await setup();
+  ok.chain.add({ slot: 1, burns: [100n] });
+  fin(ok.chain);
+  await drain(ok.ix);
+  assert.equal((await ok.ix.reconcile()).status, 'verified');
+  ok.chain.add({ slot: 9, burns: [5n] });
+  await ok.ix.syncOnce();
+  assert.equal(((await ok.ix.status()).verification as any).code, 'indexed_changed');
+});
+
+t('C3: after a tail gap too large, widening the window catches up exactly AND the stale incident is resolved (no eternal "incomplete")', async () => {
+  const { chain, store, mk } = await setup({ maxTailPages: 2 });
+  chain.add({ slot: 1, burns: [100n] });
+  fin(chain);
+  const first = mk();
+  await drain(first);
+  for (let s = 2; s <= 21; s++) chain.add({ slot: s, burns: [100n] }); // a long interruption: 20 burns while the engine was down
+  for (let i = 0; i < 3; i++) assert.match((await first.syncOnce()).error!, /gap too large/);
+  assert.equal((await store.totals('alpha')).finalizedRaw, 100n, 'nothing skipped, nothing counted out of order');
+  assert.deepEqual((await first.status()).issues.map((i) => i.code), ['tail_gap_too_large']);
+  const wider = mk({ maxTailPages: 20 });
+  assert.equal((await wider.syncOnce()).error, null);
+  assert.equal((await store.totals('alpha')).finalizedRaw, 2100n);
+  assert.equal((await store.totals('alpha')).count, 21);
+  assert.deepEqual((await wider.status()).issues, [], 'the resolved incident is gone');
+  assert.equal((await wider.reconcile()).status, 'verified');
+  assert.equal((await wider.status()).complete, true);
+});
+
+t('C3: incidents that are NOT about listing (a quarantined transaction) are never auto-resolved', async () => {
+  const { chain, ix } = await setup({ maxSignatureAttempts: 1 });
+  const bad = chain.add({ slot: 1, burns: [100n] });
+  chain.add({ slot: 2, burns: [5n] });
+  fin(chain);
+  chain.nullFor.add(bad);
+  for (let i = 0; i < 3; i++) await ix.syncOnce();
+  assert.ok((await ix.status()).issues.some((i) => i.code === 'tx_unavailable'));
+  await ix.syncOnce();
+  assert.ok((await ix.status()).issues.some((i) => i.code === 'tx_unavailable'), 'still visible: the history cannot be called complete');
+});
+
 t('reconcile: a burn missing from the node history is detected as a mismatch with the exact gap', async () => {
   const { chain, ix } = await setup();
   chain.add({ slot: 1, burns: [100n] });
   chain.add({ slot: 2, burns: [40n], hidden: true });
   fin(chain);
   await drain(ix);
-  assert.deepEqual(await ix.reconcile(), { status: 'mismatch', expectedBurnedRaw: '140', indexedBurnedRaw: '100' });
+  assert.deepEqual(withoutAt(await ix.reconcile()), { status: 'mismatch', expectedBurnedRaw: '140', indexedBurnedRaw: '100' });
   assert.equal((await ix.status()).complete, false);
 });
 
@@ -310,7 +414,7 @@ t('reconcile: retries when a burn lands between the supply reading and the catch
     chain.add({ slot: 30, burns: [25n] });
     fin(chain);
   };
-  assert.deepEqual(await ix.reconcile(), { status: 'verified', burnedRaw: '125' });
+  assert.deepEqual(withoutAt(await ix.reconcile()), { status: 'verified', burnedRaw: '125' });
   assert.equal(chain.calls.supply, 2);
 });
 

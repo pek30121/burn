@@ -8,18 +8,16 @@
  *      signature index) with the indexed burns. `verified` = the index lost no burn; `mismatch` = it did.
  * Candidates come from the latest `.mainnet/scan-*.json` (mints seen burning in real blocks) or MINTS=a,b,c. */
 import { readdirSync, readFileSync } from 'node:fs';
-import { decodeBase58 } from '../../src/core/base58.ts';
 import { parseProjectConfig } from '../../src/config/schema.ts';
 import { formatUiAmount } from '../../src/core/amount.ts';
 import { Indexer } from '../../src/indexer/indexer.ts';
 import { MemoryStore } from '../../src/indexer/memory-store.ts';
 import { parseMint } from '../../src/wallet/token-info.ts';
-import { TOKEN_PROGRAMS } from '../../src/config/schema.ts';
+import { listHistory, sumHistory } from './history.ts';
 import { assertMainnet, call, describeMainnetRpc, engineRpc, stats } from './rpc.ts';
 
 const MAX_SIGS = Number(process.env.AUDIT_MAX_SIGS ?? 600);
 const MAX_MINTS = Number(process.env.AUDIT_MAX_MINTS ?? 5);
-const PROGRAMS = new Map<string, string>(Object.entries(TOKEN_PROGRAMS).map(([n, id]) => [id, n]));
 console.log(`INFO  provider: ${describeMainnetRpc()}`);
 await assertMainnet();
 
@@ -47,36 +45,13 @@ for (const mint of candidates) {
   if (info.mintAuthority !== null) { console.log(`SKIP  ${short} mint authority not revoked (supply check not valid)`); skipped++; continue; }
   if (info.tokenProgram === 'token-2022' && info.extensions.length > 0) console.log(`INFO  ${short} Token-2022 extensions: ${info.extensions.map((e) => e.name).join(',')}`);
   // whole history, bounded
-  const sigs: { signature: string; err: unknown }[] = [];
-  let before: string | undefined, exhausted = false;
-  while (sigs.length < MAX_SIGS) {
-    const page = await rpc.getSignaturesForAddress(mint, { commitment: 'finalized', limit: 1000, ...(before ? { before } : {}) });
-    sigs.push(...page);
-    if (page.length < 1000) { exhausted = true; break; }
-    before = page.at(-1)!.signature;
-  }
+  const { sigs, exhausted } = await listHistory(rpc, mint, MAX_SIGS);
   if (!exhausted) { console.log(`SKIP  ${short} history larger than ${MAX_SIGS} signatures (audit budget)`); skipped++; continue; }
 
-  // (1) everything ever minted, read from the raw transactions
-  let minted = 0n, rawBurned = 0n, txCount = 0, burnInstr = 0;
-  for (const s of sigs) {
-    if (s.err !== null) continue;
-    const tx = await rpc.getTransaction(s.signature, 'finalized') as any;
-    if (!tx) { console.log(`WARN  ${short} getTransaction returned null for ${s.signature.slice(0, 8)}…`); continue; }
-    txCount++;
-    const msg = tx.transaction.message;
-    const keys: string[] = [...msg.accountKeys, ...(tx.meta?.loadedAddresses?.writable ?? []), ...(tx.meta?.loadedAddresses?.readonly ?? [])];
-    const visit = (ix: any) => {
-      if (!PROGRAMS.has(keys[ix.programIdIndex]!)) return;
-      const d = decodeBase58(ix.data);
-      if (!d || ![7, 14, 8, 15].includes(d[0]!) || d.length < 9 || keys[ix.accounts[d[0] === 7 || d[0] === 14 ? 0 : 1]!] !== mint) return;
-      const amount = new DataView(d.buffer, d.byteOffset, d.byteLength).getBigUint64(1, true);
-      if (d[0] === 7 || d[0] === 14) minted += amount;
-      if (d[0] === 8 || d[0] === 15) { rawBurned += amount; burnInstr++; }
-    };
-    msg.instructions.forEach(visit);
-    for (const g of tx.meta?.innerInstructions ?? []) g.instructions.forEach(visit);
-  }
+  // (1) everything ever minted and burned, read from the raw transactions
+  const sums = await sumHistory(rpc, mint, sigs);
+  const { minted, burned: rawBurned, burnOps: burnInstr, transactions: txCount } = sums;
+  if (sums.unavailable) console.log(`WARN  ${short} ${sums.unavailable} transaction(s) returned null`);
   const supplyNow = (await rpc.getTokenSupply(mint, 'finalized')).amountRaw;
   const project = parseProjectConfig({ id: 'audit', name: 'audit', ticker: 'AUDIT', cluster: 'mainnet-beta', mint, decimals: info.decimals, tokenProgram: info.tokenProgram, initialSupply: formatUiAmount(minted, info.decimals), levels: [{ id: 'l0', name: 'Zero', threshold: '0' }] });
   const store = new MemoryStore([project]);
