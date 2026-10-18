@@ -63,5 +63,8 @@ The same page works on a desktop browser with the extensions at `http://127.0.0.
 ## Hosted on Replit (no computer, no engine, no secret)
 `.replit` + `deploy/` deploy only the page and its `/rpc` proxy, pointed at the **public Devnet RPC** (no Helius key). `deploy/wallet-test-config.json` lists the public mints of the two Devnet test tokens. Verified here in a real Chromium against `npm run web:start` (compiled copy, public Devnet RPC, no engine): connect, balance, real fee and simulation, burn of 4 tokens finalized on Devnet, balance refreshed. **The Replit import and deployment themselves were not run by me.** Steps for the user are in the hand-off message; the engine-confirmation step ("COMPTÉ par le moteur") cannot be shown there since no engine runs.
 
+## Si la page affiche `signed_message_mismatch`
+Le wallet a renvoyé une transaction qui n'est pas celle prévisualisée. Depuis D30, des ajouts connus et sans danger (instructions Lighthouse / ComputeBudget, ré-encodage v0) sont acceptés ; **tout le reste est refusé et rien n'est envoyé**. L'écran affiche alors une ligne du type `(version legacy->v0; required signers 1->1; accounts 4->6; instructions 1->3; programs [...]; payer same; blockhash same; lookup tables 0)` : faites-en une capture, elle suffit à diagnostiquer. Ce détail ne contient que des informations publiques.
+
 ## Tests
 `npm run check` (includes `tests/web-server.test.ts`: proxy allowlist, key never returned, rate limit, path traversal) and `npm run web:browser-test` (network + Devnet + PostgreSQL; not part of `npm test`).

@@ -95,7 +95,7 @@ function render(s) {
       pk.lastElementChild.textContent = v;
     }
   }
-  $('txPhase').textContent = s.tx.phase + (s.tx.slot ? ` (slot ${s.tx.slot})` : '') + (s.tx.signature ? (s.tx.messageVerified ? ' — message vérifié' : ' — message non vérifiable (wallet signAndSend)') : '');
+  $('txPhase').textContent = s.tx.phase + (s.tx.slot ? ` (slot ${s.tx.slot})` : '') + (s.tx.signature ? (s.tx.messageVerified ? (s.tx.walletAdditions ? ` — message vérifié (le wallet a ajouté ${s.tx.walletAdditions.lighthouse} instruction(s) de protection Lighthouse et ${s.tx.walletAdditions.computeBudget} de frais ; version ${s.tx.walletAdditions.version}; frais de priorité max ${s.tx.walletAdditions.priorityFeeLamports} lamports)` : ' — message vérifié') : ' — message non vérifiable (wallet signAndSend)') : '');
   $('sig').innerHTML = '';
   if (s.tx.signature) { const a = document.createElement('a'); a.href = `https://explorer.solana.com/tx/${s.tx.signature}?cluster=${config.cluster === 'devnet' ? 'devnet' : ''}`; a.target = '_blank'; a.rel = 'noopener'; a.textContent = s.tx.signature; $('sig').append(a); } else $('sig').textContent = '—';
   $('enginePhase').textContent = { idle: '—', waiting: 'en attente du moteur…', counted: `COMPTÉ par le moteur (événement ${s.engine.burnEventId})`, timeout: 'délai dépassé : pas encore listé par le moteur (pas une erreur)' }[s.engine.phase];

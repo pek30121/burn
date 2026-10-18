@@ -53,6 +53,14 @@ export interface WalletProvider {
   onChange(listener: (e: WalletEvent) => void): () => void;
 }
 
+/** Bytes from whatever a wallet hands back: a Uint8Array (possibly from another JavaScript realm, as in some in-app browsers), another view, or a plain array. Always a copy. */
+export function toBytes(x: unknown): Uint8Array | null {
+  if (x instanceof Uint8Array) return x;
+  if (ArrayBuffer.isView(x)) return new Uint8Array(x.buffer.slice(x.byteOffset, x.byteOffset + x.byteLength));
+  if (Array.isArray(x) && x.every((n) => Number.isInteger(n) && n >= 0 && n <= 255)) return Uint8Array.from(x);
+  return null;
+}
+
 const toAccount = (a: StdAccount): WalletAccount => ({ address: a.address, chains: a.chains, raw: a });
 export const isSolanaWallet = (w: StdWallet): boolean =>
   typeof w?.name === 'string' && Array.isArray(w.chains) && w.chains.some((c) => c.startsWith('solana:')) &&
@@ -81,15 +89,15 @@ export function adaptStandardWallet(w: StdWallet): WalletProvider {
     async signTransaction(account, transaction, chain) {
       if (!sign) throw new Error('this wallet cannot sign transactions without sending them');
       const out = await sign({ account: account.raw, transaction, chain });
-      const signed = out?.[0]?.signedTransaction;
-      if (!(signed instanceof Uint8Array)) throw new Error('the wallet returned no signed transaction');
+      const signed = toBytes(out?.[0]?.signedTransaction);
+      if (!signed) throw new Error('the wallet returned no signed transaction');
       return signed;
     },
     async signAndSendTransaction(account, transaction, chain) {
       if (!signSend) throw new Error('this wallet cannot sign and send');
       const out = await signSend({ account: account.raw, transaction, chain });
-      const signature = out?.[0]?.signature;
-      if (!(signature instanceof Uint8Array)) throw new Error('the wallet returned no signature');
+      const signature = toBytes(out?.[0]?.signature);
+      if (!signature) throw new Error('the wallet returned no signature');
       return signature;
     },
     onChange(listener) {

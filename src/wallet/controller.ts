@@ -18,7 +18,7 @@ import { BurnFlowError, describeTxError, isUserRejection, type BurnErrorCode } f
 import type { EngineApi, EngineStatus } from './engine-client.ts';
 import type { WalletRpc } from './rpc.ts';
 import { assessBurn, parseMint, parseTokenAccount, type BurnBlock, type BurnEligibility, type MintInfo, type TokenAccountInfo } from './token-info.ts';
-import { assertSameMessage, BASE_FEE_LAMPORTS, buildUnsignedBurn, toBase64, TxError, type UnsignedBurn } from './tx.ts';
+import { BASE_FEE_LAMPORTS, buildUnsignedBurn, toBase64, TxError, verifySignedTransaction, type UnsignedBurn, type WalletAdditions } from './tx.ts';
 import { chainOfCluster, type SolanaChain, type WalletAccount, type WalletProvider, type WalletRegistry } from './wallet-standard.ts';
 import { encodeBase58 } from '../core/base58.ts';
 
@@ -29,6 +29,16 @@ export type EnginePhase = 'idle' | 'waiting' | 'counted' | 'timeout';
 export type TxPhase = 'none' | 'sent' | 'processed' | 'confirmed' | 'finalized' | 'failed' | 'expired';
 
 export interface FlowError { readonly code: BurnErrorCode; readonly message: string; readonly detail?: string }
+
+export interface TxState {
+  readonly signature: string | null;
+  readonly phase: TxPhase;
+  readonly slot: number | null;
+  /** true: the signed message was checked against the preview (exactly, or semantically with wallet additions). */
+  readonly messageVerified: boolean;
+  /** What the wallet added around our burn (e.g. Phantom's Lighthouse safety checks), null when it returned our bytes unchanged. */
+  readonly walletAdditions: WalletAdditions | null;
+}
 
 export interface BurnPreview {
   readonly id: number;
@@ -71,7 +81,7 @@ export interface BurnState {
   readonly amountInput: string;
   readonly amountRaw: bigint | null;
   readonly preview: BurnPreview | null;
-  readonly tx: { readonly signature: string | null; readonly phase: TxPhase; readonly slot: number | null; readonly messageVerified: boolean };
+  readonly tx: TxState;
   /** Written by the engine only. `counted` = our engine's journal lists this burn. */
   readonly engine: { readonly phase: EnginePhase; readonly burnEventId: string | null };
   readonly counter: { readonly status: 'unknown' | 'ok' | 'unavailable'; readonly engine: EngineStatus | null };
@@ -96,7 +106,7 @@ export interface BurnControllerOptions {
 const initial = (): BurnState => ({
   status: 'disconnected', wallet: null, account: null, accounts: [], token: null, holding: null, solBalanceLamports: null,
   amountInput: '', amountRaw: null, preview: null,
-  tx: { signature: null, phase: 'none', slot: null, messageVerified: false },
+  tx: { signature: null, phase: 'none', slot: null, messageVerified: false, walletAdditions: null },
   engine: { phase: 'idle', burnEventId: null }, counter: { status: 'unknown', engine: null }, error: null,
 });
 
@@ -252,7 +262,7 @@ export class BurnController {
     this.#set({
       status: 'connected', wallet: this.#provider ? { name: this.#provider.name, icon: this.#provider.icon } : null, account: acc.address,
       accounts: all.map((a) => a.address), token: null, holding: null, solBalanceLamports: null, amountInput: '', amountRaw: null, preview: null,
-      tx: { signature: null, phase: 'none', slot: null, messageVerified: false }, engine: { phase: 'idle', burnEventId: null },
+      tx: { signature: null, phase: 'none', slot: null, messageVerified: false, walletAdditions: null }, engine: { phase: 'idle', burnEventId: null },
       ...(keepError ? {} : { error: null }),
     });
     if (!this.#supportsChain(acc)) { this.#fail('wrong_network', undefined, 'connected'); return; }
@@ -409,9 +419,10 @@ export class BurnController {
 
     const gen = this.#gen;
     this.#unsigned = null; // a preview can be confirmed once
-    this.#set({ status: 'awaiting_signature', error: null, tx: { signature: null, phase: 'none', slot: null, messageVerified: false }, engine: { phase: 'idle', burnEventId: null } });
+    this.#set({ status: 'awaiting_signature', error: null, tx: { signature: null, phase: 'none', slot: null, messageVerified: false, walletAdditions: null }, engine: { phase: 'idle', burnEventId: null } });
     let signature: string;
     let verified = true;
+    let additions: WalletAdditions | null = null;
     try {
       // Baseline BEFORE sending: the engine event we wait for must come after it.
       const baseline = await this.#o.engine.getStatus().then((st) => { this.#set({ counter: { status: 'ok', engine: st } }); return st.latestEventId; }).catch(() => null);
@@ -419,7 +430,9 @@ export class BurnController {
       if (provider.canSign) {
         signedBytes = await provider.signTransaction(acc, unsigned.transaction, this.chain);
         if (gen !== this.#gen) return;
-        signature = assertSameMessage(signedBytes, unsigned).signatureBase58;
+        const checked = verifySignedTransaction(signedBytes, unsigned); // exact bytes, or the same burn plus allowlisted wallet additions
+        signature = checked.signatureBase58;
+        additions = checked.additions.computeBudget + checked.additions.lighthouse > 0 || checked.additions.version !== 'legacy' ? checked.additions : null;
         this.#set({ status: 'sending' });
         const sent = await this.#o.rpc.sendTransaction(toBase64(signedBytes));
         if (sent !== signature) throw new BurnFlowError('send_failed', 'signature mismatch');
@@ -430,7 +443,7 @@ export class BurnController {
         signature = encodeBase58(sigBytes);
         this.#set({ status: 'sending' });
       }
-      this.#set({ status: 'confirming', tx: { signature, phase: 'sent', slot: null, messageVerified: verified } });
+      this.#set({ status: 'confirming', tx: { signature, phase: 'sent', slot: null, messageVerified: verified, walletAdditions: additions } });
       await this.#follow(signature, baseline, unsigned);
     } catch (e) {
       if (gen !== this.#gen) return;
@@ -438,7 +451,7 @@ export class BurnController {
       if (code === 'rpc_unavailable') code = 'send_failed'; // anything that fails between signing and sending
       // Nothing sent: the flow is ready for another try. (After sending, #follow reports its own outcome.)
       if (this.#state.tx.signature === null) this.#set({ status: 'ready', preview: null });
-      this.#fail(code);
+      this.#fail(code, e instanceof TxError ? e.detail : undefined);
     }
   }
 
@@ -523,7 +536,7 @@ export class BurnController {
     this.#unsigned = null;
     this.#set({
       status: this.#state.holding ? 'ready' : this.#account ? 'connected' : 'disconnected', amountInput: '', amountRaw: null, preview: null,
-      tx: { signature: null, phase: 'none', slot: null, messageVerified: false }, engine: { phase: 'idle', burnEventId: null }, error: null,
+      tx: { signature: null, phase: 'none', slot: null, messageVerified: false, walletAdditions: null }, engine: { phase: 'idle', burnEventId: null }, error: null,
     });
   }
 }

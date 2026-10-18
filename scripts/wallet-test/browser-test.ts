@@ -11,8 +11,8 @@
 import { execFileSync } from 'node:child_process';
 import { createPool, loadDbConfig } from '../../src/db/config.ts';
 import { encodeBase58 } from '../../src/core/base58.ts';
-import { splitTransaction, toBase64, fromBase64 } from '../../src/wallet/tx.ts';
-import { Keypair, loadOrCreateKeypair, TOKEN_2022_PROGRAM, TOKEN_PROGRAM } from '../devnet/chain.ts';
+import { COMPUTE_BUDGET_PROGRAM, parseMessage, splitTransaction, toBase64, fromBase64 } from '../../src/wallet/tx.ts';
+import { compileMessage, compactU16, Keypair, loadOrCreateKeypair, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, type Instruction } from '../devnet/chain.ts';
 import { Report } from '../devnet/check.ts';
 import { boot, newRun, projectJson } from '../devnet/harness.ts';
 import { assertDevnet, getBalance, RPC_URL, rpc } from '../devnet/rpc.ts';
@@ -31,10 +31,14 @@ execFileSync('npx', ['tsc', '-p', 'tsconfig.web.json'], { stdio: 'inherit', cwd:
 const payer = loadOrCreateKeypair(WALLET_PATH).keypair;
 const send = makeSend(payer);
 const users = { A: Keypair.generate(), B: Keypair.generate(), C: Keypair.generate() };
-const spl = await createTestMint(send, payer, TOKEN_PROGRAM);
-const t22 = await createTestMint(send, payer, TOKEN_2022_PROGRAM);
+// REUSE_DEPLOY_TOKENS=1 reuses the mints of deploy/wallet-test-config.json (the funding wallet keeps their mint authority): saves rent when the funding wallet is low.
+const reuse = process.env.REUSE_DEPLOY_TOKENS === '1' ? JSON.parse((await import('node:fs')).readFileSync(new URL('../../deploy/wallet-test-config.json', import.meta.url), 'utf8')).projects : null;
+const spl = reuse ? { mint: reuse[0].mint as string } : await createTestMint(send, payer, TOKEN_PROGRAM);
+const t22 = reuse ? { mint: reuse[1].mint as string } : await createTestMint(send, payer, TOKEN_2022_PROGRAM);
+const SOL_A = BigInt(process.env.SOL_A ?? 10_000_000);
+const SOL_B = BigInt(process.env.SOL_B ?? 3_000_000);
 r.fact('test tokens (Devnet)', { spl: spl.mint, token2022: t22.mint });
-await send([transferSol(payer.address, users.A.address, 50_000_000n), transferSol(payer.address, users.B.address, 20_000_000n)]); // C gets NO SOL on purpose
+await send([transferSol(payer.address, users.A.address, SOL_A), transferSol(payer.address, users.B.address, SOL_B)]); // C gets NO SOL on purpose
 await giveTokens(send, payer, TOKEN_PROGRAM, spl.mint, users.A.address, 100n * UI);
 await giveTokens(send, payer, TOKEN_2022_PROGRAM, t22.mint, users.A.address, 100n * UI);
 await giveTokens(send, payer, TOKEN_PROGRAM, spl.mint, users.B.address, 7n * UI);
@@ -75,10 +79,18 @@ const consoleErrors: string[] = [];
 page.on('pageerror', (e: Error) => consoleErrors.push(e.message));
 
 const byAddress = new Map<string, Keypair>(Object.values(users).map((k) => [k.address, k]));
+let walletAddsBudget = false; // when set, the wallet behaves like Phantom does: it adds instructions around ours before signing
 const signB64 = (address: string, txB64: string): Uint8Array => {
   const kp = byAddress.get(address);
   if (!kp) throw new Error('unknown account');
-  const { message } = splitTransaction(fromBase64(txB64));
+  let { message } = splitTransaction(fromBase64(txB64));
+  if (walletAddsBudget) {
+    const asked = parseMessage(message);
+    const original: Instruction[] = asked.instructions.map((i) => ({ programId: asked.keys[i.programIdIndex]!, keys: i.accounts.map((a) => ({ pubkey: asked.keys[a]!, isSigner: a < asked.numRequiredSignatures, isWritable: a < asked.numRequiredSignatures - asked.numReadonlySigned || (a >= asked.numRequiredSignatures && a < asked.keys.length - asked.numReadonlyUnsigned) })), data: i.data }));
+    const budget = (data: number[]): Instruction => ({ programId: COMPUTE_BUDGET_PROGRAM, keys: [], data: Uint8Array.from(data) });
+    message = compileMessage(address, [budget([2, 0x30, 0x75, 0, 0]), budget([3, 0xe8, 0x03, 0, 0, 0, 0, 0, 0]), ...original], asked.recentBlockhash).message; // limit 30 000 units, price 1 000 micro-lamports
+  }
+  void compactU16;
   return Uint8Array.from([1, ...kp.sign(message), ...message]);
 };
 let nodeSigned = 0;
@@ -125,8 +137,8 @@ await page.addInitScript((cfg: { accounts: { address: string; publicKey: number[
   }
 }, { accounts: [users.A, users.B, users.C].map((k) => ({ address: k.address, publicKey: [...k.publicKey] })) });
 
-const state = () => page.evaluate(() => { const s = (window as any).__burn.controller.getState(); return { status: s.status, account: s.account, err: s.error?.code ?? null, tx: s.tx.phase, sig: s.tx.signature, eng: s.engine.phase, avail: s.holding?.available ?? null, amountRaw: s.amountRaw?.toString() ?? null, preview: !!s.preview, counter: s.counter.engine?.finalizedRaw?.toString() ?? null }; });
-const until = (fn: (s: any) => boolean, what: string, ms = 90_000) => page.waitForFunction((src: string) => { const s = (window as any).__burn.controller.getState(); const st = { status: s.status, account: s.account, err: s.error?.code ?? null, tx: s.tx.phase, eng: s.engine.phase, avail: s.holding?.available ?? null, preview: !!s.preview, counter: s.counter.engine?.finalizedRaw?.toString() ?? null }; return (0, eval)(`(${src})`)(st); }, fn.toString(), { timeout: ms, polling: 100 }).catch(async (e: Error) => { throw new Error(`timed out waiting for ${what}; state=${JSON.stringify(await state())}`); });
+const state = () => page.evaluate(() => { const s = (window as any).__burn.controller.getState(); return { status: s.status, account: s.account, err: s.error?.code ?? null, tx: s.tx.phase, sig: s.tx.signature, eng: s.engine.phase, avail: s.holding?.available ?? null, amountRaw: s.amountRaw?.toString() ?? null, preview: !!s.preview, counter: s.counter.engine?.finalizedRaw?.toString() ?? null, synced: s.counter.engine?.synced ?? false }; });
+const until = (fn: (s: any) => boolean, what: string, ms = 90_000) => page.waitForFunction((src: string) => { const s = (window as any).__burn.controller.getState(); const st = { status: s.status, account: s.account, err: s.error?.code ?? null, tx: s.tx.phase, eng: s.engine.phase, avail: s.holding?.available ?? null, preview: !!s.preview, counter: s.counter.engine?.finalizedRaw?.toString() ?? null, synced: s.counter.engine?.synced ?? false }; return (0, eval)(`(${src})`)(st); }, fn.toString(), { timeout: ms, polling: 100 }).catch(async (e: Error) => { throw new Error(`timed out waiting for ${what}; state=${JSON.stringify(await state())}`); });
 const track = () => page.evaluate(() => { const w = window as any; w.__hist = []; w.__burn.controller.subscribe((s: any) => w.__hist.push({ tx: s.tx.phase, eng: s.engine.phase, ctr: s.counter.engine?.finalizedRaw?.toString() ?? null })); });
 const text = (sel: string) => page.locator(sel).innerText();
 const restTotal = async (id: string) => BigInt((await (await fetch(`${engine.url}/api/v1/projects/${id}/status`)).json() as any).totals.finalizedRaw);
@@ -143,8 +155,8 @@ try {
   /* 2. SPL burn with the signTransaction wallet */
   await page.getByRole('button', { name: 'Connecter TestPhantom' }).click();
   await until((s) => s.status === 'ready' && s.account !== null, 'SPL ready');
-  r.check('connect: account, SOL balance and token balance shown', (await text('#account')) === users.A.address && (await text('#balance')) === '100' && (await text('#available')).startsWith('100') && (await text('#sol')).includes('0.05'));
-  await until((s) => s.counter !== null, 'engine counter');
+  r.check('connect: account, SOL balance and token balance shown', (await text('#account')) === users.A.address && (await text('#balance')) === '100' && (await text('#available')).startsWith('100') && (await text("#sol")).includes((Number(SOL_A) / 1e9).toFixed(6)));
+  await until((s) => s.counter !== null && s.synced, 'engine counter (history indexed)', 120_000);
   const before = BigInt((await state()).counter!);
   await track();
   await page.fill('#amount', '12.5');
@@ -156,6 +168,7 @@ try {
   r.check('nothing signed before the explicit confirmation', nodeSigned === 0);
   await page.click('#confirm');
   await until((s) => s.eng === 'counted', 'SPL burn counted by the engine', 150_000);
+  await page.waitForFunction((b: string) => (window as any).__burn.controller.getState().counter.engine?.finalizedRaw?.toString() !== b, before.toString(), { timeout: 20_000 }); // the controller refreshes the counter right after "counted"
   const st = await state();
   const hist: { tx: string; eng: string; ctr: string | null }[] = await page.evaluate(() => (window as any).__hist);
   // The page also polls the engine API itself, so the counter may legitimately rise a moment before the controller's own wait
@@ -226,7 +239,7 @@ try {
   await page.getByRole('button', { name: 'Connecter TestSolflare' }).click();
   await until((s) => s.status === 'ready' && s.avail === '100', 'Token-2022 ready');
   r.check('Token-2022: programme and balance shown', (await text('#program')).startsWith('token-2022') && (await text('#balance')) === '100');
-  await until((s) => s.counter !== null, 'T22 counter');
+  await until((s) => s.counter !== null && s.synced, 'T22 counter (history indexed)', 120_000);
   const before22 = BigInt((await state()).counter!);
   await track();
   await page.fill('#amount', '3');
@@ -234,6 +247,7 @@ try {
   await until((s) => s.status === 'preview_ready', 'T22 preview');
   await page.click('#confirm');
   await until((s) => s.eng === 'counted', 'Token-2022 burn counted by the engine', 150_000);
+  await page.waitForFunction((b: string) => (window as any).__burn.controller.getState().counter.engine?.finalizedRaw?.toString() !== b, before22.toString(), { timeout: 20_000 });
   const st22 = await state();
   const hist22: { tx: string; eng: string; ctr: string | null }[] = await page.evaluate(() => (window as any).__hist);
   r.check('Token-2022 via signAndSend wallet: counter +3 exactly, and unchanged while only sent / processed / confirmed', BigInt(st22.counter!) === before22 + 3_000_000n && hist22.filter((h: any) => h.tx !== 'finalized').every((h: any) => BigInt(h.ctr ?? before22.toString()) === before22), `${st22.counter} vs ${before22}`);
@@ -242,6 +256,31 @@ try {
   const row22 = await burnRow('wt-t22', st22.sig!);
   r.fact('Token-2022 burn', `${st22.sig} (3 tokens, via signAndSend wallet)`);
   r.check('Token-2022 PostgreSQL row = exact amount and owner', row22.length === 1 && row22[0].a === '3000000' && row22[0].owner === users.A.address);
+
+  /* 8b. a wallet that adds instructions around ours (what Phantom documents it may do): real Devnet transaction */
+  await page.click('#disconnect');
+  await until((s) => s.status === 'disconnected', 'disconnected again');
+  await page.selectOption('#project', 'wt-spl');
+  await page.getByRole('button', { name: 'Connecter TestPhantom' }).click();
+  await until((s) => s.status === 'ready' && s.avail === '87.5', 'SPL ready again');
+  walletAddsBudget = true;
+  const beforeAdd = BigInt((await state()).counter ?? '0');
+  await page.fill('#amount', '1');
+  await page.click('#preview');
+  await until((s) => s.status === 'preview_ready', 'preview (wallet adds instructions)');
+  await page.click('#confirm');
+  await until((s) => s.eng === 'counted', 'burn with wallet-added instructions counted', 150_000);
+  walletAddsBudget = false;
+  const stAdd = await state();
+  const onChain = await rpc<any>('getTransaction', [stAdd.sig!, { encoding: 'json', maxSupportedTransactionVersion: 1, commitment: 'finalized' }]);
+  const addText = await text('#txPhase');
+  r.fact('burn with wallet-added instructions', `${stAdd.sig} (1 token, ${onChain.transaction.message.instructions.length} instructions on-chain)`);
+  r.check('wallet-added ComputeBudget instructions: accepted, finalized on Devnet with 3 instructions, reported on screen', onChain.transaction.message.instructions.length === 3 && stAdd.tx === 'finalized' && addText.includes('a ajouté'), addText);
+  const rowAdd = await burnRow('wt-spl', stAdd.sig!);
+  const burnEv = (await (await fetch(`${engine.url}/api/v1/projects/wt-spl/events?limit=100`)).json() as any).data.find((e: any) => e.type === 'burn' && e.burn.signature === stAdd.sig);
+  r.check('the engine counted it at its real position (instruction path 2, not 0), exact amount, PostgreSQL row', rowAdd.length === 1 && rowAdd[0].a === '1000000' && burnEv?.burn.instructionPath === '2', `path ${burnEv?.burn.instructionPath}`);
+  await new Promise((res) => setTimeout(res, 1500));
+  r.check('counter +1 exactly after the engine counted it', BigInt((await state()).counter ?? '0') === beforeAdd + 1_000_000n, `${beforeAdd} -> ${(await state()).counter}`);
 
   /* 9. wallet-side disconnect */
   await page.evaluate(() => (window as any).__ctl.walletDisconnect());
