@@ -30,7 +30,7 @@ export class PgStore implements IndexerStore, ApiSource {
   readonly #pool: Pool;
   readonly #projects = new Map<string, ProjectConfig>();
   readonly #versions = new Map<string, number>();
-  readonly #locks = new Map<string, PoolClient>();
+  readonly #locks = new Map<string, { client: PoolClient; pid: number; lost: boolean }>();
 
   constructor(pool: Pool, projects: readonly ProjectConfig[]) {
     this.#pool = pool;
@@ -363,31 +363,71 @@ export class PgStore implements IndexerStore, ApiSource {
   /** Session-level advisory lock: only one process should index a project at a time. Held until released or the connection dies. */
   async tryLockProject(projectId: string): Promise<boolean> {
     this.#project(projectId);
-    if (this.#locks.has(projectId)) return true;
+    if (this.#locks.has(projectId)) {
+      if (await this.leaseValid(projectId)) return true; // re-entrant only while the session really holds it
+    }
     const c = await this.#connect();
+    // A dead lease connection emits 'error'; without a listener that would crash the process.
+    const lease = { client: c, pid: 0, lost: false };
+    const onError = (): void => {
+      lease.lost = true;
+    };
+    c.on('error', onError);
     try {
-      const r = await c.query("SELECT pg_try_advisory_lock(hashtext(current_schema() || ':project'), hashtext($1)) AS ok", [projectId]);
+      const r = await c.query("SELECT pg_try_advisory_lock(hashtext(current_schema() || ':project'), hashtext($1)) AS ok, pg_backend_pid() AS pid", [projectId]);
       if (r.rows[0].ok) {
-        this.#locks.set(projectId, c);
+        lease.pid = num(r.rows[0].pid);
+        this.#locks.set(projectId, lease);
         return true;
       }
     } catch (e) {
+      c.removeListener('error', onError);
       c.release(true);
       throw toStoreError(e);
     }
+    c.removeListener('error', onError);
     c.release();
     return false;
   }
 
-  async releaseProject(projectId: string): Promise<void> {
-    const c = this.#locks.get(projectId);
-    if (!c) return;
+  /**
+   * True only if this store still holds the lease: the session that took the advisory lock is alive
+   * and is the same backend. If it died (database restart, network cut, terminated backend) the lock
+   * is gone — the lease is forgotten so the caller stops writing and has to win it again.
+   */
+  async leaseValid(projectId: string): Promise<boolean> {
+    const lease = this.#locks.get(projectId);
+    if (!lease) return false;
+    if (!lease.lost) {
+      try {
+        const r = await lease.client.query('SELECT pg_backend_pid() AS pid');
+        if (num(r.rows[0].pid) === lease.pid) return true;
+      } catch {
+        /* connection is gone */
+      }
+    }
     this.#locks.delete(projectId);
     try {
-      await c.query("SELECT pg_advisory_unlock(hashtext(current_schema() || ':project'), hashtext($1))", [projectId]);
-      c.release();
+      lease.client.release(true); // destroy the connection
     } catch {
-      c.release(true); // drop the connection: closing the session frees the lock anyway
+      /* already released */
+    }
+    return false;
+  }
+
+  async releaseProject(projectId: string): Promise<void> {
+    const lease = this.#locks.get(projectId);
+    if (!lease) return;
+    this.#locks.delete(projectId);
+    try {
+      await lease.client.query("SELECT pg_advisory_unlock(hashtext(current_schema() || ':project'), hashtext($1))", [projectId]);
+      lease.client.release();
+    } catch {
+      try {
+        lease.client.release(true); // drop the connection: closing the session frees the lock anyway
+      } catch {
+        /* ignore */
+      }
     }
   }
 

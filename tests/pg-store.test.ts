@@ -18,6 +18,7 @@ const alpha = parseProjectConfig(projectInput());
 const beta = parseProjectConfig(projectInput({ id: 'beta', mint: MINT_B }));
 const L1 = 1_000_000_000n;
 const opts = { skip: pgSkip };
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const MIGRATIONS = new URL('../migrations/', import.meta.url);
 const migrationCount = async () => (await readdir(MIGRATIONS)).filter((f) => f.endsWith('.sql')).length;
 const finalized = (o: Partial<BurnInput> = {}) => burn({ commitment: 'finalized', ...o });
@@ -391,4 +392,46 @@ test('[pg] reading the state while it is being saved never makes the next save s
     await store.saveState('alpha', { ...s, finalizedHeadSlot: i + 1000 }); // the indexer saves again without reloading
   }
   assert.equal((await store.loadState('alpha')).finalizedHeadSlot, 1059);
+});
+
+/** Backend holding the project lease (advisory lock) in this schema. */
+async function leasePid(ctx: { pool: import('pg').Pool; schema: string }, project: string): Promise<number> {
+  const r = await ctx.pool.query(
+    `SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND granted
+       AND classid = (hashtext($1)::bigint & 4294967295)::oid AND objid = (hashtext($2)::bigint & 4294967295)::oid`,
+    [`${ctx.schema}:project`, project],
+  );
+  assert.equal(r.rowCount, 1, 'exactly one backend holds the lease');
+  return r.rows[0].pid as number;
+}
+
+test('[pg] REGRESSION: when the connection holding the lease dies the store notices, the process survives, and the lease can be won again', opts, async () => {
+  const { store, ctx } = await freshStore([alpha]);
+  assert.equal(await store.tryLockProject('alpha'), true);
+  assert.equal(await store.leaseValid('alpha'), true);
+
+  await ctx.pool.query('SELECT pg_terminate_backend($1)', [await leasePid(ctx, 'alpha')]); // DB restart / network cut / killed session
+  const taker = new PgStore(ctx.newPool(), [alpha]);
+  let acquired = false;
+  for (let i = 0; i < 100 && !acquired; i++) { // the server frees the lock as soon as the session is gone
+    await sleep(20);
+    acquired = await taker.tryLockProject('alpha');
+    if (!acquired) assert.equal(await store.leaseValid('alpha'), false);
+  }
+  assert.equal(acquired, true, 'another process can take the lease');
+  assert.equal(await store.leaseValid('alpha'), false, 'the original store no longer believes it holds the lease');
+  // before the fix this returned true (re-entrant) although the session was dead, and the dead connection crashed the process
+  assert.equal(await store.tryLockProject('alpha'), false);
+  await taker.releaseProject('alpha');
+  assert.equal(await store.tryLockProject('alpha'), true); // and it can win it back
+  assert.equal(await store.leaseValid('alpha'), true);
+  await store.close();
+});
+
+test('[pg] leaseValid is false for a lease that was never taken or was released', opts, async () => {
+  const { store } = await freshStore([alpha]);
+  assert.equal(await store.leaseValid('alpha'), false);
+  await store.tryLockProject('alpha');
+  await store.releaseProject('alpha');
+  assert.equal(await store.leaseValid('alpha'), false);
 });

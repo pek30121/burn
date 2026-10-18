@@ -62,10 +62,10 @@ const fast = (cfg: EngineConfig, over: Partial<EngineConfig> = {}): EngineConfig
   indexer: { ...cfg.indexer, pageSize: 3, backfillPagesPerSync: 5 }, http: { ...cfg.http, enabled: false }, ...over,
 });
 
-async function boot(db: BareSchema, chain: FakeChain, hooks: RpcHooks, o: { over?: Partial<EngineConfig>; env?: Record<string, string | undefined>; handler?: (e: LevelReachedEvent) => void | Promise<void> } = {}): Promise<Boot> {
+async function boot(db: BareSchema, chain: FakeChain, hooks: RpcHooks, o: { over?: Partial<EngineConfig>; env?: Record<string, string | undefined>; projects?: unknown[]; handler?: (e: LevelReachedEvent) => void | Promise<void> } = {}): Promise<Boot> {
   const lines: any[] = [];
   const events: LevelReachedEvent[] = [];
-  const cfg = fast(await loadEngineConfig(await envFor(db, o.env)), o.over);
+  const cfg = fast(await loadEngineConfig(await envFor(db, o.env, o.projects)), o.over);
   const engine = await startEngine(cfg, {
     log: createLogger({ level: 'debug', write: (l) => lines.push(JSON.parse(l)) }),
     fetch: fakeFetch(chain, hooks),
@@ -345,6 +345,85 @@ test('[engine] refuses to start on a bad setup, with explicit errors that contai
   await ok.stop();
   const e3 = await startEngine(await mk(db, {}, [projectInput({ id: 'alpha', mint: randomPubkey() })]), { log }).catch((e) => e);
   assert.ok(e3 instanceof EngineStartError && /different immutable settings: mint/.test(e3.message), String(e3?.message));
+});
+
+test('[engine] REGRESSION: killing the lease connection of a running engine is survived — lease_lost, re-acquired, indexing continues', opts, async () => {
+  const db = await bareSchema();
+  const chain = chainWith(4, 0);
+  const b = await boot(db, chain, newHooks());
+  const probe = db.newPool();
+  try {
+    await waitFor(async () => (await settled(b, 'alpha')) && (await burnedRaw(b, 'alpha')) === 400n, 'initial indexing');
+    const lease = await probe.query(
+      `SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND granted AND classid = (hashtext($1)::bigint & 4294967295)::oid AND objid = (hashtext('alpha')::bigint & 4294967295)::oid`,
+      [`${db.schema}:project`],
+    );
+    assert.equal(lease.rowCount, 1);
+    await probe.query('SELECT pg_terminate_backend($1)', [lease.rows[0].pid]);
+
+    await waitFor(() => b.ev('lease_lost', 'alpha').length === 1, 'lease_lost');
+    await waitFor(() => b.ev('lease_acquired', 'alpha').length === 2, 'lease re-acquired');
+    chain.add({ slot: 20, burns: [25n] }); // the engine keeps working after the incident
+    await waitFor(async () => (await burnedRaw(b, 'alpha')) === 425n, 'indexing continues');
+    const t = (await projectStatus(b, 'alpha')).indexer!.totals;
+    assert.deepEqual([t.finalizedRaw, t.count], [425n, 5]); // nothing lost, nothing counted twice
+    assert.equal((await b.engine.status()).state, 'running');
+  } finally {
+    await b.engine.stop();
+  }
+});
+
+/* ----------------------- supply reconciliation (completeness proof) ----------------------- */
+
+const withSupply = [{ ...alpha, initialSupply: '1000000' }, beta]; // FakeChain starts from 1e12 raw = 1,000,000 UI
+
+test('[engine] REGRESSION: the engine now runs the supply check, so completeness can actually be proven (and is dropped when burns change)', opts, async () => {
+  const db = await bareSchema();
+  const chain = chainWith(5, 0);
+  const b = await boot(db, chain, newHooks(), { projects: withSupply, over: { reconcileIntervalMs: 50 } });
+  try {
+    await waitFor(async () => (await projectStatus(b, 'alpha')).indexer?.verification.status === 'verified', 'verified');
+    const s = (await projectStatus(b, 'alpha')).indexer!;
+    assert.deepEqual([s.complete, s.verification], [true, { status: 'verified', burnedRaw: '500' }]);
+    assert.equal(b.ev('supply_verified', 'alpha').length, 1);
+    chain.add({ slot: 50, burns: [40n] });
+    await waitFor(() => b.ev('supply_verified', 'alpha').length === 2, 'verified again after a new burn');
+    assert.equal(b.ev('supply_verified', 'alpha')[1].burnedRaw, '540');
+    assert.equal((await projectStatus(b, 'beta')).indexer?.verification.status, 'unverified'); // no initialSupply: never claimed
+  } finally {
+    await b.engine.stop();
+  }
+});
+
+test('[engine] REGRESSION: a burn missing from the node history is flagged as a supply mismatch (never "complete")', opts, async () => {
+  const db = await bareSchema();
+  const chain = chainWith(5, 0);
+  chain.add({ slot: 60, burns: [40n], hidden: true }); // on-chain (supply) but not discoverable through the signature history
+  const b = await boot(db, chain, newHooks(), { projects: withSupply, over: { reconcileIntervalMs: 50 } });
+  try {
+    await waitFor(() => b.ev('supply_mismatch', 'alpha').length === 1, 'mismatch');
+    const m = b.ev('supply_mismatch', 'alpha')[0];
+    assert.deepEqual([m.expectedBurnedRaw, m.indexedBurnedRaw], ['540', '500']);
+    const s = (await projectStatus(b, 'alpha')).indexer!;
+    assert.deepEqual([s.complete, s.verification.status], [false, 'mismatch']);
+    await sleep(300);
+    assert.equal(b.ev('supply_mismatch', 'alpha').length, 1, 'reported once, not on every check');
+  } finally {
+    await b.engine.stop();
+  }
+});
+
+test('[engine] projects without initialSupply are never sent a supply request', opts, async () => {
+  const db = await bareSchema();
+  const hooks = newHooks();
+  const b = await boot(db, chainWith(3, 0), hooks, { over: { reconcileIntervalMs: 20 } });
+  try {
+    await waitFor(async () => (await settled(b, 'alpha')) && (await burnedRaw(b, 'alpha')) === 300n, 'indexed');
+    await sleep(200);
+    assert.equal(count(hooks, 'getTokenSupply'), 0);
+  } finally {
+    await b.engine.stop();
+  }
 });
 
 /* ----------------------- the real entry point, as a process ------------------------ */

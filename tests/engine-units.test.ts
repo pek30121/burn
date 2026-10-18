@@ -221,6 +221,103 @@ test('runner: waits for the lease instead of indexing, then indexes and releases
   assert.equal(h.runner.snapshot().state, 'stopped');
 });
 
+test('runner: REGRESSION — a lost lease stops writes at once and is re-acquired before the next sync', async () => {
+  const events: string[] = [];
+  let valid = true;
+  let grants = 0;
+  const h = harness(() => {
+    events.push('sync');
+    if (events.filter((e) => e === 'sync').length === 2) valid = false; // the lease connection dies during/after the 2nd sync
+    return ok();
+  }, {
+    store: {
+      tryLockProject: async () => { events.push('try'); valid = true; return ++grants !== 2 || events.filter((e) => e === 'try').length > 2; }, // first attempt after the loss fails once
+      leaseValid: async () => valid,
+      releaseProject: async () => void events.push('release'),
+    },
+  }, 6);
+  await h.done;
+  const lostAt = events.indexOf('sync', events.indexOf('sync') + 1);
+  const after = events.slice(lostAt + 1);
+  assert.equal(after[0], 'try', 'no sync is run on a lease that is no longer held; it is re-acquired first');
+  assert.ok(after.indexOf('sync') > after.indexOf('try'));
+  assert.ok(h.logs.some((l) => l.event === 'lease_lost'));
+  assert.ok(h.logs.filter((l) => l.event === 'lease_acquired').length >= 2);
+  assert.equal(events.at(-1), 'release');
+});
+
+function reconcileHarness(script: () => unknown, o: { every: number; moreWork?: (n: number) => boolean }, sleeps = 6) {
+  const clock = { t: 1_000_000 };
+  let syncs = 0;
+  let reconciles = 0;
+  let slept = 0;
+  const ref: { h?: ReturnType<typeof harness> } = {};
+  const h = harness(() => ok(), {
+    reconcileIntervalMs: o.every,
+    now: () => new Date(clock.t),
+    indexer: {
+      syncOnce: async () => {
+        if (++syncs > 50) { ref.h!.ctl.abort(); throw new ShutdownError(); }
+        return ok({ moreWork: o.moreWork?.(syncs) ?? false });
+      },
+      status: async () => ({ projectId: 'alpha', backfill: 'done_exhausted', finalizedHead: null, totals: { finalizedRaw: 0n, confirmedRaw: 0n, count: 0 }, progress: { level: { id: 'l0' } } as any, issues: [], verification: { status: 'unverified', reason: '' }, complete: false }),
+      reconcile: async () => { reconciles++; const r = script(); if (r instanceof Error) throw r; return r as any; },
+    },
+    sleep: async (ms: number) => {
+      clock.t += ms;
+      if (++slept >= sleeps) {
+        ref.h!.ctl.abort();
+        throw new ShutdownError();
+      }
+    },
+  }, 1_000_000);
+  ref.h = h;
+  return { h, clock, reconciles: () => reconciles };
+}
+
+test('runner: supply reconciliation runs once the project is caught up, then once per interval; only changes are reported', async () => {
+  const verdicts: any[] = [{ status: 'verified', burnedRaw: '500' }, { status: 'verified', burnedRaw: '500' }, { status: 'mismatch', expectedBurnedRaw: '540', indexedBurnedRaw: '500' }];
+  let i = 0;
+  const ctl = new AbortController();
+  const logs: any[] = [];
+  let n = 0;
+  const clock = { t: 0 };
+  const runner = new ProjectRunner({
+    projectId: 'alpha', store: {}, log: createLogger({ write: (l) => logs.push(JSON.parse(l)) }), pollIntervalMs: 1000, backoff: { baseMs: 10, maxMs: 20 }, leaseRetryMs: 1,
+    reconcileIntervalMs: 2500, now: () => new Date(clock.t),
+    indexer: {
+      syncOnce: async () => ok(),
+      status: async () => ({ projectId: 'alpha', backfill: 'done_exhausted', finalizedHead: null, totals: { finalizedRaw: 0n, confirmedRaw: 0n, count: 0 }, progress: { level: { id: 'l0' } } as any, issues: [], verification: { status: 'unverified', reason: '' }, complete: false }),
+      reconcile: async () => { n++; return verdicts[Math.min(i++, verdicts.length - 1)]; },
+    },
+    sleep: async (ms) => { clock.t += ms; if (clock.t >= 12_000) { ctl.abort(); throw new ShutdownError(); } },
+  });
+  await runner.run(ctl.signal);
+  // syncs at t=0,1000,2000,...: due at 0, 2500→3000, 5500→6000, 8500→9000, 11500→12000 is the end
+  assert.ok(n >= 3 && n <= 5, `reconciles=${n}`);
+  assert.equal(logs.filter((l) => l.event === 'supply_verified').length, 1, 'unchanged verdicts are not repeated');
+  const mismatch = logs.filter((l) => l.event === 'supply_mismatch');
+  assert.equal(mismatch.length, 1);
+  assert.deepEqual([mismatch[0].expectedBurnedRaw, mismatch[0].indexedBurnedRaw], ['540', '500']);
+});
+
+test('runner: reconciliation is skipped while backfill still has work, when disabled, and its failure is not a sync failure', async () => {
+  const a = reconcileHarness(() => ({ status: 'verified', burnedRaw: '1' }), { every: 1000, moreWork: () => true }, 4);
+  await a.h.done;
+  assert.equal(a.reconciles(), 0);
+
+  const b = reconcileHarness(() => ({ status: 'verified', burnedRaw: '1' }), { every: 0 }, 4);
+  await b.h.done;
+  assert.equal(b.reconciles(), 0);
+
+  const c = reconcileHarness(() => new Error('rpc down'), { every: 1000 }, 4);
+  await c.h.done;
+  assert.ok(c.reconciles() >= 1);
+  assert.ok(c.h.logs.some((l) => l.event === 'reconcile_failed'));
+  assert.equal(c.h.runner.snapshot().consecutiveFailures, 0);
+  assert.equal(c.h.logs.filter((l) => l.event === 'sync_failed').length, 0);
+});
+
 test('runner: a failing project does not stop another one (isolation)', async () => {
   const bad = harness(() => ok({ error: 'down' }), {}, 50);
   const good = harness(() => ok(), {}, 5);

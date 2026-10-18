@@ -26,6 +26,7 @@ Moteur universel de burn/progression pour tokens SPL Solana (Pump.fun en priorit
 - Toute donnée est clée par `project_id` ; aucun état partagé entre projets. Erreurs/logs : jamais l'URL ni le mot de passe de la base (passer par `StoreError`).
 - Jamais présenter l'estimation de crédits RPC (`RpcMeter`) comme la facturation réelle du fournisseur.
 - API publique : lecture seule, jamais d'action ni de configuration modifiable ; montants en **chaînes** décimales ; rien d'interne dans les réponses (URL RPC, SQL, textes d'erreur, détails d'incidents) ; SSE/événements uniquement depuis le journal durable `project_events` (burns finalisés), ids alloués sous le verrou des compteurs. Toute évolution de ce chemin exige les tests de non-perte/ordre (`api-sse`, `api.pg`).
+- Devnet : n'annoncer un scénario comme validé que s'il a réellement été exécuté (voir `docs/DEVNET.md` pour ce qui l'est et ne l'est pas) ; une simulation locale n'est jamais présentée comme un test réel. Le moteur ne dépend jamais des logs de programme.
 - Parseur : une réponse `malformed` ou un résultat `complete: false` n'est **pas** « aucun burn » — l'appelant doit réessayer ou alerter, jamais l'ignorer. Les transactions `failed` ne comptent jamais.
 - Ne jamais annoncer une couverture exhaustive des burns sans preuve : citer les expériences de DECISIONS.md (E1) et leurs limites.
 
@@ -42,6 +43,7 @@ Moteur universel de burn/progression pour tokens SPL Solana (Pump.fun en priorit
 - `src/indexer/` — `indexer.ts` (un par projet : backfill, tail, confirmé/finalisé, reconcile), `store.ts` (interface de stockage + curseur), `memory-store.ts`, `pg-store.ts` (PostgreSQL, mêmes tests que la mémoire).
 - `src/engine/` — assemblage : `config.ts` (env), `engine.ts` (`startEngine`/`stop`/`status`), `runner.ts` (un par projet : bail, backoff), `limiter.ts` + `meter.ts` (débit et compteurs RPC, estimation locale ≠ facturation), `logger.ts` (JSON expurgé). `src/main.ts` : point d'entrée.
 - `src/api/` — API publique **en lecture seule** : `http.ts` (routes, CORS, limites), `sse.ts` (flux), `serialize.ts` (formes publiques), `limits.ts`, `types.ts` (contrat `ApiSource`, implémenté par `PgStore`).
+- `scripts/devnet/` — outillage et scénarios Devnet (voir `docs/DEVNET.md`) ; jamais de Mainnet, jamais de clé affichée/commitée (`.devnet/` ignoré).
 - `src/db/` — `config.ts` (env → pool), `errors.ts` (erreurs expurgées), `migrate.ts`. `migrations/` — SQL versionné, jamais modifié après application (checksum).
 - `config/projects.example.json` — exemple de configuration multi-tokens.
 - `tests/` — tests unitaires (`*.test.ts`) ; `fake-chain.ts` simule un nœud avec pannes injectables. `tests/fixtures/` : vraies transactions Devnet enregistrées (réponses `getTransaction` brutes), à ne pas modifier à la main.

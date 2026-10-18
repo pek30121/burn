@@ -147,3 +147,6 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# Devnet test wallet and run artifacts: private keys must never be committed
+.devnet/

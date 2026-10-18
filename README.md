@@ -55,6 +55,8 @@ Without it you get live events only (`ready.resumeAfter` tells where you are; us
 (ids are strictly increasing per project; across restarts they are stable). On `reset` (your id is ahead of the server's log, e.g. restored database) refetch state from REST.
 `shutdown` means reconnect (it resumes where it stopped).
 
+Devnet validation (real transactions, no Mainnet): see [`docs/DEVNET.md`](docs/DEVNET.md) — `npm run devnet:wallet | devnet:observe | devnet:simulate | devnet:e2e`.
+
 Real-database tests: create a dedicated database whose name contains `test`, then
 `TEST_DATABASE_URL=postgres://user:pass@127.0.0.1:5432/engine_test npm test` (each test uses its own schema, dropped afterwards).
 

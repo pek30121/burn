@@ -13,16 +13,20 @@ export type RunnerState = 'starting' | 'syncing' | 'idle' | 'backoff' | 'waiting
 export interface RunnerStore {
   tryLockProject?(projectId: string): Promise<boolean>;
   releaseProject?(projectId: string): Promise<void>;
+  /** False when the session holding the lease died. */
+  leaseValid?(projectId: string): Promise<boolean>;
 }
 
 export interface RunnerOptions {
   readonly projectId: string;
-  readonly indexer: Pick<Indexer, 'syncOnce' | 'status'>;
+  readonly indexer: Pick<Indexer, 'syncOnce' | 'status'> & Partial<Pick<Indexer, 'reconcile'>>;
   readonly store: RunnerStore;
   readonly log: Logger;
   readonly pollIntervalMs: number;
   readonly backoff: { readonly baseMs: number; readonly maxMs: number };
   readonly leaseRetryMs: number;
+  /** 0 = never. Otherwise, how often a caught-up project is checked against the on-chain supply (needs initialSupply). */
+  readonly reconcileIntervalMs?: number;
   readonly sleep: (ms: number) => Promise<void>;
   readonly random?: () => number;
   readonly now?: () => Date;
@@ -46,6 +50,8 @@ export class ProjectRunner {
   #lastError: string | null = null;
   #held = false;
   #seenIssues: Set<string> | null = null;
+  #lastReconcile = Number.NEGATIVE_INFINITY;
+  #lastVerification = '';
 
   constructor(o: RunnerOptions) {
     this.#o = o;
@@ -60,6 +66,11 @@ export class ProjectRunner {
     try {
       while (!signal.aborted) {
         try {
+          if (this.#held && store.leaseValid && !(await store.leaseValid(projectId))) {
+            this.#held = false; // never keep writing on a lease we no longer hold
+            this.#state = 'waiting_lease';
+            log.warn('lease_lost', { message: 'the connection holding the project lease was lost; re-acquiring before the next sync' });
+          }
           if (!this.#held && store.tryLockProject) {
             if (!(await store.tryLockProject(projectId))) {
               if (this.#state !== 'waiting_lease') log.warn('lease_held_elsewhere', { retryInMs: this.#o.leaseRetryMs });
@@ -78,6 +89,7 @@ export class ProjectRunner {
             continue;
           }
           await this.#succeeded(res);
+          if (!res.moreWork) await this.#maybeReconcile();
           if (res.moreWork) await new Promise<void>((r) => setImmediate(r)); // the shared limiter paces the requests
           else {
             this.#state = 'idle';
@@ -119,6 +131,26 @@ export class ProjectRunner {
         recorded: res.burnsRecorded, finalized: res.burnsPromoted, dropped: res.burnsDropped,
         totalFinalizedRaw: status?.totals.finalizedRaw.toString(), totalCount: status?.totals.count, level: status?.progress.level.id,
       });
+    }
+  }
+
+  /** Supply proof: the only way `data.history.complete` can become true. A failure here is not a sync failure. */
+  async #maybeReconcile(): Promise<void> {
+    const { indexer, log } = this.#o;
+    const every = this.#o.reconcileIntervalMs ?? 0;
+    const nowMs = (this.#o.now ?? (() => new Date()))().getTime();
+    if (!indexer.reconcile || every <= 0 || nowMs - this.#lastReconcile < every) return;
+    this.#lastReconcile = nowMs;
+    try {
+      const v = await indexer.reconcile();
+      const key = JSON.stringify(v);
+      if (key === this.#lastVerification) return; // report changes, not every check
+      this.#lastVerification = key;
+      if (v.status === 'verified') log.info('supply_verified', { burnedRaw: v.burnedRaw });
+      else if (v.status === 'mismatch') log.error('supply_mismatch', { expectedBurnedRaw: v.expectedBurnedRaw, indexedBurnedRaw: v.indexedBurnedRaw });
+      else log.info('supply_unverified', { reason: v.reason });
+    } catch (e) {
+      log.warn('reconcile_failed', { error: describe(e) });
     }
   }
 

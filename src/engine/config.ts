@@ -33,6 +33,8 @@ export interface EngineConfig {
   readonly creditCosts: Readonly<Record<string, number>>;
   readonly shutdownTimeoutMs: number;
   readonly statusLogIntervalMs: number;
+  /** 0 disables. Projects with initialSupply are periodically checked against the on-chain supply. */
+  readonly reconcileIntervalMs: number;
   readonly migrateOnStart: boolean;
   readonly logLevel: LogLevel;
   /** Public read-only HTTP API. `enabled: false` runs the indexers only. */
@@ -158,6 +160,7 @@ export async function loadEngineConfig(env: Env = process.env): Promise<EngineCo
     },
     shutdownTimeoutMs: int('SHUTDOWN_TIMEOUT_MS', 20_000, 100, 600_000),
     statusLogIntervalMs: int('STATUS_LOG_INTERVAL_MS', 300_000, 0, 86_400_000),
+    reconcileIntervalMs: int('RECONCILE_INTERVAL_MS', 300_000, 0, 86_400_000),
     migrateOnStart: bool('MIGRATE_ON_START', true),
   };
   const httpPortRaw = env.HTTP_PORT ?? env.PORT;

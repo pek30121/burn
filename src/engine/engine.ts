@@ -128,6 +128,7 @@ export async function startEngine(cfg: EngineConfig, deps: EngineDeps): Promise<
     runners.set(project.id, new ProjectRunner({
       projectId: project.id, indexer, store, log: plog, pollIntervalMs: cfg.pollIntervalMs,
       backoff: cfg.errorBackoff, leaseRetryMs: cfg.leaseRetryMs, sleep,
+      reconcileIntervalMs: project.initialSupplyRaw !== null && project.startSlot === 0 ? cfg.reconcileIntervalMs : 0,
     }));
   }
 
