@@ -19,7 +19,10 @@
     "devnet:observe": "node scripts/devnet/observe-existing.ts",
     "devnet:simulate": "node scripts/devnet/simulate.ts",
     "devnet:probe": "node scripts/devnet/probe-confirmed.ts",
-    "devnet:rpc-check": "node scripts/devnet/rpc-check.ts"
+    "devnet:rpc-check": "node scripts/devnet/rpc-check.ts",
+    "devnet:wallet-flow": "node scripts/devnet/wallet-flow.ts",
+    "mainnet:scan": "node scripts/mainnet/scan.ts",
+    "mainnet:reconcile": "node scripts/mainnet/reconcile.ts"
   },
   "devDependencies": {
     "@types/node": "22.20.5",

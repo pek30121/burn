@@ -10,7 +10,7 @@ export type Cluster = (typeof CLUSTERS)[number];
 
 export const TOKEN_PROGRAMS = {
   'spl-token': 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
-  'token-2022': 'TokenzQdBNbLqP5VEhdkAS6EnX6xJ9yS4aCc58B6zN9',
+  'token-2022': 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',
 } as const;
 export type TokenProgram = keyof typeof TOKEN_PROGRAMS;
 

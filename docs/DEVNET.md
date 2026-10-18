@@ -14,6 +14,7 @@ The private key stays in `.devnet/wallet.json`. It is never printed, logged or c
 |---|---|---|
 | `npm run devnet:observe` | no | the whole engine (real RPC client, PostgreSQL, indexers, REST, SSE) on **real burns made by others** (one direct, one by CPI): exact amounts, finalized-only indexing, persistence, SSE = REST, `Last-Event-ID`, restart without loss, RPC outage (local pass-through proxy, real data behind it) |
 | `npm run devnet:simulate` | no (nothing is sent) | our token instructions (create, mint, `Burn`, `BurnChecked`, revoke) run on the **real Devnet runtime** via `simulateTransaction`: exact supply arithmetic, authority revoked, runtime rejects wrong decimals / over-burn / mint after revoke |
+| `npm run devnet:wallet-flow` | **yes** | the wallet module (`src/wallet`) end to end with real Devnet transactions: isolated user key held only by a Wallet-Standard-shaped test wallet, SPL Token **and Token-2022**, real balance/fee/simulation/send/finalization, then counted only after the real engine lists it (PostgreSQL row = chain) |
 | `npm run devnet:rpc-check` | no | real read-only requests against the configured RPC (Helius when `HELIUS_API_KEY` is set) |
 | `npm run devnet:probe` | yes | focused experiment: how the engine's status evolves between `confirmed` and `finalized` for one real burn |
 | `npm run devnet:e2e` | **yes** | our own real transactions end to end: tokens created, burns below / across / over several thresholds, one tx with two burns, burn while the engine is down, RPC outage, restarts, no mutation before finalization, supply reconciliation proving completeness, SSE reconnection |
@@ -53,10 +54,24 @@ Outcome: tok-a 212 000 000 raw burned, tok-b 300 000 000, both equal to `initial
 
 ## Not covered (and why)
 * **Burn by CPI with our own transaction**: needs a deployed program (build toolchain + SOL for deployment). CPI parsing is validated on real third-party CPI burns (`tests/fixtures/devnet-cpi-burn-*.json`, `devnet:observe`).
-* **Token-2022**: the program account `TokenzQd…` does not exist on this Devnet (checked with `getAccountInfo`), so no scenario can run. Token-2022 is covered by parser unit tests only.
+* **Token-2022 extensions**: only a plain Token-2022 mint (no extensions) was exercised on Devnet. Extension handling (Pausable, ConfidentialMintBurn, scaled UI…) is covered by unit tests and by decoding a real Mainnet mint (PYUSD), not by Devnet transactions.
 * **Mainnet / Helius**: not tested.
 
 ## Findings that shaped the code
 * The Devnet Token program no longer logs `Instruction: Burn`. The engine decodes instruction bytes and never relies on logs — keep it that way (a log filter would miss every burn).
 * Nothing called `reconcile()`, so `history.complete` could never become true; the runner now runs it periodically (`RECONCILE_INTERVAL_MS`) for projects with `initialSupply`.
 * The connection holding the project lease could die silently (and crash the process through an unhandled `error` event); `PgStore` now detects it (`leaseValid`) and the runner re-acquires before writing again.
+
+## Run of 2026-10-18 after the Token-2022 fix (D23) — `devnet:e2e` 51/51 and `devnet:wallet-flow` 23/23
+The earlier statement “Token-2022 does not exist on this Devnet” was **wrong**: it came from a wrong program id in the code. With the correct id (`TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb`) the program exists and both scenarios run. All transactions FINALIZED.
+
+`devnet:e2e` Token-2022 part (tok-c `3TEYVDWNiqNFHUzeDLquxtDHfBJhJUfgVRDLKAzFhWDh`): Burn 2 000 000 raw `vXUvzQsksKMFUBuRsZyQuGTAAv8anSNQfh2NXDFSAeNQDaLc8m5gxxFZesL4Wu17ERKfBMnz37AL6ttENcQN4hp` (slot 512526773) and BurnChecked 11 000 000 raw `2aZzZZk8S684xi4Xygr67pdidoZVwqGavA9LapqSv26qxWBKChuD49WDumZFESNB1Kcun9TAXefAN1pYm5pb788E` (slot 512526778): detected, level reached, total 13 000 000 = initial supply − on-chain supply, completeness proven.
+
+`devnet:wallet-flow` (user wallet `9dSqSoFf4ZiTMt2RGYnsVpQKjgb3BCs6GVdGksDSE4Rn`, signs only inside the test wallet; fee 5 000 lamports via `getFeeForMessage`; Devnet simulation 138 CU / 1 391 CU):
+
+| token | burn (7 250 000 raw) | slot |
+|---|---|---:|
+| SPL Token `Go5P11JRJrugNoytEwx5Wm6CWjH6bmXtW2azD8Qzkbky` | `315uJXDGnXTYCZFRk24oMiKs5MxoaHhtorE2g7p8bBexQMJqTXpPCVdT29iBsAuBq1KdiUwasSZ52eqKVUZLKRTC` | 512524400 |
+| Token-2022 `5HoU2ogJ7zjoagoQ7swF5Qva2nBF4or8e7mPjWojG6py` | `NowKMkSZYWbNKnM9Z2cBzDiEKH8fGetJ4Fx27XLLYdoe7rTjek9ezizAGTbt9iz61gcs2LSb5cpdT6NmQMJrqB7` | 512524412 |
+
+Not covered by this script: the real Phantom/Solflare extensions.

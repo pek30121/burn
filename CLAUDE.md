@@ -30,6 +30,9 @@ Moteur universel de burn/progression pour tokens SPL Solana (Pump.fun en priorit
 - Parseur : une réponse `malformed` ou un résultat `complete: false` n'est **pas** « aucun burn » — l'appelant doit réessayer ou alerter, jamais l'ignorer. Les transactions `failed` ne comptent jamais.
 - Ne jamais annoncer une couverture exhaustive des burns sans preuve : citer les expériences de DECISIONS.md (E1) et leurs limites.
 
+- Wallet : le compteur ne bouge que sur un burn listé par le journal du moteur (jamais sur une signature envoyée) ; le module ne signe jamais ; extensions Token-2022 inconnues = bloquées. Identifiants de programmes : toujours vérifiés contre des données on-chain réelles (D23).
+- La clé Helius du moteur ne doit jamais être utilisée par un navigateur.
+
 ## Conventions de code
 - ESM, imports relatifs avec extension `.ts`, syntaxe effaçable uniquement (`erasableSyntaxOnly` : pas d'`enum`, pas de propriétés de paramètres de constructeur).
 - Fonctions pures dans `src/core`, I/O (RPC, base, HTTP) dans des modules séparés, injectables pour les tests.
@@ -43,6 +46,8 @@ Moteur universel de burn/progression pour tokens SPL Solana (Pump.fun en priorit
 - `src/indexer/` — `indexer.ts` (un par projet : backfill, tail, confirmé/finalisé, reconcile), `store.ts` (interface de stockage + curseur), `memory-store.ts`, `pg-store.ts` (PostgreSQL, mêmes tests que la mémoire).
 - `src/engine/` — assemblage : `config.ts` (env), `engine.ts` (`startEngine`/`stop`/`status`), `runner.ts` (un par projet : bail, backoff), `limiter.ts` + `meter.ts` (débit et compteurs RPC, estimation locale ≠ facturation), `logger.ts` (JSON expurgé). `src/main.ts` : point d'entrée.
 - `src/api/` — API publique **en lecture seule** : `http.ts` (routes, CORS, limites), `sse.ts` (flux), `serialize.ts` (formes publiques), `limits.ts`, `types.ts` (contrat `ApiSource`, implémenté par `PgStore`).
+- `src/wallet/` — module wallet côté navigateur, **sans design ni clé** : `tx.ts` (transaction non signée), `token-info.ts` (Token/Token-2022, fail-closed), `wallet-standard.ts`, `rpc.ts`, `engine-client.ts`, `controller.ts` (machine à états), `errors.ts`. Voir `docs/WALLET.md` et DECISIONS D24.
+- `scripts/mainnet/` — audit **lecture seule** du Mainnet (liste blanche de méthodes RPC, garde par hash de genèse) ; voir `docs/MAINNET.md`. Jamais d'envoi de transaction.
 - `scripts/devnet/` — outillage et scénarios Devnet (voir `docs/DEVNET.md`) ; jamais de Mainnet, jamais de clé affichée/commitée (`.devnet/` ignoré).
 - `src/db/` — `config.ts` (env → pool), `errors.ts` (erreurs expurgées), `migrate.ts`. `migrations/` — SQL versionné, jamais modifié après application (checksum).
 - `config/projects.example.json` — exemple de configuration multi-tokens.

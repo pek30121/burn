@@ -150,3 +150,6 @@ vite.config.ts.timestamp-*
 
 # Devnet test wallet and run artifacts: private keys must never be committed
 .devnet/
+
+# Mainnet audit artifacts (read-only runs)
+.mainnet/
