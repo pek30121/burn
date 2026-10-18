@@ -14,6 +14,7 @@ import type { Pool, PoolClient } from 'pg';
 import { BurnLedger, type BurnInput, type BurnRecord, type Commitment, type LevelReachedEvent, type RecordResult } from '../core/ledger.ts';
 import { crossedLevels } from '../core/progression.ts';
 import type { Level, ProjectConfig } from '../config/schema.ts';
+import type { ApiSource, ReachedLevel, StoredBurnRow, StoredEvent } from '../api/types.ts';
 import { ConfigMismatchError, StaleStateError, StoreError, toStoreError } from '../db/errors.ts';
 import { emptyState, type IndexIssue, type IndexState, type IndexerStore, type Totals, type Verification } from './store.ts';
 
@@ -25,7 +26,7 @@ const num = (v: unknown): number => {
   return n;
 };
 
-export class PgStore implements IndexerStore {
+export class PgStore implements IndexerStore, ApiSource {
   readonly #pool: Pool;
   readonly #projects = new Map<string, ProjectConfig>();
   readonly #versions = new Map<string, number>();
@@ -96,8 +97,9 @@ export class PgStore implements IndexerStore {
     const key = `${burn.signature}#${burn.instructionPath}`;
 
     return this.#tx(async (c): Promise<RecordResult> => {
-      const cnt = (await c.query('SELECT finalized_raw, confirmed_only_raw FROM project_counters WHERE project_id = $1 FOR UPDATE', [projectId])).rows[0];
+      const cnt = (await c.query('SELECT finalized_raw, confirmed_only_raw, event_seq FROM project_counters WHERE project_id = $1 FOR UPDATE', [projectId])).rows[0];
       const finalized0 = big(cnt.finalized_raw);
+      const seq0 = num(cnt.event_seq);
       const confirmedOnly0 = big(cnt.confirmed_only_raw);
 
       const ex = (await c.query(
@@ -119,8 +121,8 @@ export class PgStore implements IndexerStore {
             [projectId, burn.signature, burn.instructionPath],
           );
           const finalized1 = finalized0 + burn.amountRaw;
-          await c.query('UPDATE project_counters SET finalized_raw=$2, confirmed_only_raw=$3, updated_at=now() WHERE project_id=$1', [projectId, finalized1.toString(), (confirmedOnly0 - burn.amountRaw).toString()]);
-          const events = await this.#levelEvents(c, p, finalized0, finalized1, key);
+          const { events, seq } = await this.#finalizedEvents(c, p, seq0, finalized0, finalized1, burn, key);
+          await c.query('UPDATE project_counters SET finalized_raw=$2, confirmed_only_raw=$3, event_seq=$4, updated_at=now() WHERE project_id=$1', [projectId, finalized1.toString(), (confirmedOnly0 - burn.amountRaw).toString(), seq]);
           return { status: 'promoted', record: { ...existing, commitment: 'finalized' }, events };
         }
         return { status: 'duplicate', record: existing, events: [] };
@@ -134,12 +136,31 @@ export class PgStore implements IndexerStore {
       const record: BurnRecord = { ...burn, projectId, key };
       if (burn.commitment === 'finalized') {
         const finalized1 = finalized0 + burn.amountRaw;
-        await c.query('UPDATE project_counters SET finalized_raw=$2, burn_count=burn_count+1, updated_at=now() WHERE project_id=$1', [projectId, finalized1.toString()]);
-        return { status: 'inserted', record, events: await this.#levelEvents(c, p, finalized0, finalized1, key) };
+        const { events, seq } = await this.#finalizedEvents(c, p, seq0, finalized0, finalized1, burn, key);
+        await c.query('UPDATE project_counters SET finalized_raw=$2, burn_count=burn_count+1, event_seq=$3, updated_at=now() WHERE project_id=$1', [projectId, finalized1.toString(), seq]);
+        return { status: 'inserted', record, events };
       }
       await c.query('UPDATE project_counters SET confirmed_only_raw=$2, burn_count=burn_count+1, updated_at=now() WHERE project_id=$1', [projectId, (confirmedOnly0 + burn.amountRaw).toString()]);
       return { status: 'inserted', record, events: [] };
     });
+  }
+
+  /**
+   * A burn just became finalized: append its event, then the level events it caused, to the
+   * durable log. Ids are allocated under the counters row lock held by the caller, which is what
+   * makes commit order equal id order.
+   */
+  async #finalizedEvents(c: Q, p: ProjectConfig, seq0: number, prev: bigint, next: bigint, burn: BurnInput, key: string): Promise<{ events: LevelReachedEvent[]; seq: number }> {
+    let seq = seq0 + 1;
+    await c.query(
+      "INSERT INTO project_events (project_id, seq, kind, signature, instruction_path) VALUES ($1,$2,'burn',$3,$4)",
+      [p.id, seq, burn.signature, burn.instructionPath],
+    );
+    const events = await this.#levelEvents(c, p, prev, next, key);
+    for (const e of events) {
+      await c.query("INSERT INTO project_events (project_id, seq, kind, level_id) VALUES ($1,$2,'mutation',$3)", [p.id, ++seq, e.level.id]);
+    }
+    return { events, seq };
   }
 
   /** Level-reached rows double as the outbox; the primary key makes each level fire at most once. */
@@ -219,6 +240,18 @@ export class PgStore implements IndexerStore {
   /* ------------------------------ cursor ---------------------------------- */
 
   async loadState(projectId: string): Promise<IndexState> {
+    const { state, version } = await this.#readState(projectId);
+    // Never move the known version backwards: a read that raced with our own save may be older.
+    this.#versions.set(projectId, Math.max(this.#versions.get(projectId) ?? 0, version));
+    return state;
+  }
+
+  /** Read-only view of the index state for the public API: does not touch the writer's version tracking. */
+  async peekState(projectId: string): Promise<IndexState> {
+    return (await this.#readState(projectId)).state;
+  }
+
+  async #readState(projectId: string): Promise<{ state: IndexState; version: number }> {
     this.#project(projectId);
     const [st, issues] = await Promise.all([
       this.#query('SELECT * FROM index_state WHERE project_id = $1', [projectId]),
@@ -226,15 +259,16 @@ export class PgStore implements IndexerStore {
     ]);
     const r = st.rows[0];
     if (!r) throw new StoreError(`no index state for project "${projectId}" (was the store created with it?)`);
-    // Never move the known version backwards: a read that raced with our own save may be older.
-    this.#versions.set(projectId, Math.max(this.#versions.get(projectId) ?? 0, num(r.version)));
     return {
-      finalizedHead: r.finalized_head,
-      finalizedHeadSlot: r.finalized_head_slot === null ? null : num(r.finalized_head_slot),
-      backfillBefore: r.backfill_before,
-      backfill: r.backfill,
-      issues: issues.rows.map((i): IndexIssue => ({ code: i.code, detail: i.detail, ...(i.signature ? { signature: i.signature } : {}) })),
-      verification: r.verification as Verification,
+      version: num(r.version),
+      state: {
+        finalizedHead: r.finalized_head,
+        finalizedHeadSlot: r.finalized_head_slot === null ? null : num(r.finalized_head_slot),
+        backfillBefore: r.backfill_before,
+        backfill: r.backfill,
+        issues: issues.rows.map((i): IndexIssue => ({ code: i.code, detail: i.detail, ...(i.signature ? { signature: i.signature } : {}) })),
+        verification: r.verification as Verification,
+      },
     };
   }
 
@@ -265,6 +299,63 @@ export class PgStore implements IndexerStore {
       }
       this.#versions.set(projectId, num(up.rows[0].version));
     });
+  }
+
+  /* ---------------------- read side (public API / SSE) ---------------------- */
+
+  async ping(): Promise<void> {
+    await this.#query('SELECT 1', []);
+  }
+
+  async latestEventId(projectId: string): Promise<number> {
+    this.#project(projectId);
+    const r = await this.#query('SELECT event_seq FROM project_counters WHERE project_id = $1', [projectId]);
+    return r.rows[0] ? num(r.rows[0].event_seq) : 0;
+  }
+
+  async eventsAfter(projectId: string, after: number, limit: number): Promise<StoredEvent[]> {
+    this.#project(projectId);
+    const rows = (await this.#query(
+      `SELECT e.seq, e.kind, e.created_at,
+              b.signature, b.instruction_path, b.slot, b.block_time, b.owner, b.amount_raw, b.finalized_at,
+              l.level_id, l.level_index, l.total_raw, l.triggered_by
+       FROM project_events e
+       LEFT JOIN burns b ON e.kind = 'burn' AND b.project_id = e.project_id AND b.signature = e.signature AND b.instruction_path = e.instruction_path
+       LEFT JOIN level_events l ON e.kind = 'mutation' AND l.project_id = e.project_id AND l.level_id = e.level_id
+       WHERE e.project_id = $1 AND e.seq > $2 ORDER BY e.seq LIMIT $3`,
+      [projectId, after, limit],
+    )).rows;
+    return rows.map((r): StoredEvent => {
+      const id = num(r.seq);
+      if (r.kind === 'burn') return { id, type: 'burn', createdAt: r.created_at, burn: this.#burnOf(r) };
+      return { id, type: 'mutation', createdAt: r.created_at, mutation: { levelId: r.level_id, levelIndex: num(r.level_index), totalRaw: big(r.total_raw), triggeredBy: r.triggered_by } };
+    });
+  }
+
+  async burnsPage(projectId: string, before: number | null, limit: number): Promise<StoredBurnRow[]> {
+    this.#project(projectId);
+    const rows = (await this.#query(
+      `SELECT e.seq, b.signature, b.instruction_path, b.slot, b.block_time, b.owner, b.amount_raw, b.finalized_at
+       FROM project_events e
+       JOIN burns b ON b.project_id = e.project_id AND b.signature = e.signature AND b.instruction_path = e.instruction_path
+       WHERE e.project_id = $1 AND e.kind = 'burn' AND ($2::bigint IS NULL OR e.seq < $2)
+       ORDER BY e.seq DESC LIMIT $3`,
+      [projectId, before, limit],
+    )).rows;
+    return rows.map((r) => ({ id: num(r.seq), burn: this.#burnOf(r) }));
+  }
+
+  async reachedLevels(projectId: string): Promise<ReachedLevel[]> {
+    this.#project(projectId);
+    const rows = (await this.#query('SELECT level_id, created_at, triggered_by FROM level_events WHERE project_id = $1 ORDER BY seq', [projectId])).rows;
+    return rows.map((r) => ({ levelId: r.level_id, at: r.created_at, triggeredBy: r.triggered_by }));
+  }
+
+  #burnOf(r: any): StoredBurnRow['burn'] {
+    return {
+      signature: r.signature, instructionPath: r.instruction_path, slot: num(r.slot), blockTime: r.block_time === null ? null : num(r.block_time),
+      owner: r.owner, amountRaw: big(r.amount_raw), finalizedAt: r.finalized_at,
+    };
   }
 
   /* --------------------- single-writer lease per project ------------------- */

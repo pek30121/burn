@@ -270,3 +270,35 @@ test('runner: stop wakes a sleeping runner immediately', async () => {
   assert.equal(runner.snapshot().state, 'stopped');
   void MINT_A;
 });
+
+/* ------------------------------ HTTP config ----------------------------- */
+
+test('config (http): safe defaults — enabled, loopback only, no CORS, bounded limits', async () => {
+  const { http } = await loadEngineConfig(await env());
+  assert.deepEqual(
+    [http.enabled, http.host, http.port, http.corsOrigins, http.trustProxy, http.rateLimitPerMinute, http.sse.maxConnections, http.sse.maxPerIp],
+    [true, '127.0.0.1', 8787, [], false, 120, 200, 10],
+  );
+});
+
+test('config (http): PORT is honoured as a fallback (hosting platforms), HTTP_PORT wins, 0 = ephemeral', async () => {
+  assert.equal((await loadEngineConfig(await env({ PORT: '3000' }))).http.port, 3000);
+  assert.equal((await loadEngineConfig(await env({ PORT: '3000', HTTP_PORT: '4000' }))).http.port, 4000);
+  assert.equal((await loadEngineConfig(await env({ HTTP_PORT: '0' }))).http.port, 0);
+  assert.match(await issues(await env({ HTTP_PORT: '70000' })), /HTTP_PORT/);
+  assert.equal((await loadEngineConfig(await env({ HTTP_ENABLED: 'false' }))).http.enabled, false);
+});
+
+test('config (http): CORS_ORIGINS is an explicit list of exact origins; wildcards and paths are refused', async () => {
+  const c = await loadEngineConfig(await env({ CORS_ORIGINS: 'https://app.example, http://localhost:5173' }));
+  assert.deepEqual(c.http.corsOrigins, ['https://app.example', 'http://localhost:5173']);
+  for (const bad of ['*', 'https://app.example/', 'https://app.example/path', 'app.example', 'ftp://x.example', 'https://ok.example,*']) {
+    assert.match(await issues(await env({ CORS_ORIGINS: bad })), /CORS_ORIGINS/, bad);
+  }
+});
+
+test('config (http): numeric limits are validated', async () => {
+  for (const [k, v] of [['SSE_MAX_CONNECTIONS', '0'], ['SSE_POLL_MS', '10'], ['HTTP_RATE_LIMIT_PER_MINUTE', 'x'], ['HTTP_DB_CONCURRENCY', '99'], ['TRUST_PROXY', 'yes']] as const) {
+    assert.match(await issues(await env({ [k]: v })), new RegExp(k), k);
+  }
+});

@@ -5,6 +5,7 @@ import { loadDbConfig, DbConfigError, type DbConfig } from '../db/config.ts';
 import { registerSecret } from '../db/errors.ts';
 import { CLUSTERS, ConfigError, type Cluster } from '../config/schema.ts';
 import { ProjectRegistry } from '../config/registry.ts';
+import type { ApiConfig } from '../api/http.ts';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 export const LOG_LEVELS: readonly LogLevel[] = ['debug', 'info', 'warn', 'error'];
@@ -34,6 +35,8 @@ export interface EngineConfig {
   readonly statusLogIntervalMs: number;
   readonly migrateOnStart: boolean;
   readonly logLevel: LogLevel;
+  /** Public read-only HTTP API. `enabled: false` runs the indexers only. */
+  readonly http: ApiConfig & { readonly enabled: boolean };
 }
 
 export const DEFAULT_CREDIT_COSTS = { getSignaturesForAddress: 1, getTransaction: 1, getTokenSupply: 1 } as const;
@@ -121,6 +124,18 @@ export async function loadEngineConfig(env: Env = process.env): Promise<EngineCo
     }
   }
 
+  const corsOrigins = (env.CORS_ORIGINS ?? '').split(',').map((o) => o.trim()).filter(Boolean);
+  for (const o of corsOrigins) {
+    let ok = false;
+    try {
+      const u = new URL(o);
+      ok = (u.protocol === 'http:' || u.protocol === 'https:') && u.origin === o;
+    } catch {
+      /* invalid */
+    }
+    if (!ok) issues.push('CORS_ORIGINS: expected a comma-separated list of exact origins such as https://app.example.com (no "*", no path)');
+  }
+
   const logLevel = (env.LOG_LEVEL ?? 'info') as LogLevel;
   if (!LOG_LEVELS.includes(logLevel)) issues.push(`LOG_LEVEL: expected one of ${LOG_LEVELS.join(', ')}`);
 
@@ -145,8 +160,33 @@ export async function loadEngineConfig(env: Env = process.env): Promise<EngineCo
     statusLogIntervalMs: int('STATUS_LOG_INTERVAL_MS', 300_000, 0, 86_400_000),
     migrateOnStart: bool('MIGRATE_ON_START', true),
   };
+  const httpPortRaw = env.HTTP_PORT ?? env.PORT;
+  const http = {
+    enabled: bool('HTTP_ENABLED', true),
+    host: env.HTTP_HOST || '127.0.0.1',
+    port: httpPortRaw === undefined || httpPortRaw === '' ? 8787 : (() => {
+      const n = Number(httpPortRaw);
+      if (!Number.isInteger(n) || n < 0 || n > 65_535) issues.push('HTTP_PORT: expected an integer in [0, 65535]');
+      return Number.isInteger(n) ? n : 8787;
+    })(),
+    corsOrigins,
+    trustProxy: bool('TRUST_PROXY', false),
+    rateLimitPerMinute: int('HTTP_RATE_LIMIT_PER_MINUTE', 120, 1, 100_000),
+    sse: {
+      maxConnections: int('SSE_MAX_CONNECTIONS', 200, 1, 100_000),
+      maxPerIp: int('SSE_MAX_PER_IP', 10, 1, 1_000),
+      heartbeatMs: int('SSE_HEARTBEAT_MS', 15_000, 100, 300_000),
+      pollMs: int('SSE_POLL_MS', 1_000, 100, 60_000),
+      slowClientMs: int('SSE_SLOW_CLIENT_MS', 10_000, 100, 300_000),
+    },
+    statusCacheMs: int('HTTP_STATUS_CACHE_MS', 2_000, 0, 60_000),
+    dbConcurrency: int('HTTP_DB_CONCURRENCY', 4, 1, 32),
+    dbQueue: int('HTTP_DB_QUEUE', 50, 0, 10_000),
+    shutdownGraceMs: int('HTTP_SHUTDOWN_GRACE_MS', 2_000, 0, 60_000),
+  };
+
   if (cfg.errorBackoff.maxMs < cfg.errorBackoff.baseMs) issues.push('ERROR_BACKOFF_MAX_MS: must be >= ERROR_BACKOFF_BASE_MS');
 
   if (issues.length) throw new EngineConfigError(issues);
-  return { cluster: cluster!, db: db!, registry: registry!, creditCosts, logLevel, ...cfg };
+  return { cluster: cluster!, db: db!, registry: registry!, creditCosts, logLevel, http, ...cfg };
 }

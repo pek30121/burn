@@ -2,6 +2,7 @@
  * and runner per project, all sharing one request limiter and one meter. Projects are
  * isolated: each has its own RPC client, indexer, cursor and failure/backoff state. */
 
+import { createApiServer, type ApiServer } from '../api/http.ts';
 import { SolanaRpc } from '../chain/rpc.ts';
 import { createPool } from '../db/config.ts';
 import { migrationStatus, runMigrations } from '../db/migrate.ts';
@@ -49,6 +50,8 @@ export interface Engine {
   stop(reason?: string): Promise<{ clean: boolean }>;
   readonly stopped: Promise<void>;
   readonly meter: RpcMeter;
+  /** Port the public HTTP API listens on (null when disabled). */
+  readonly httpPort: number | null;
 }
 
 const timeout = (ms: number) => new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), ms).unref());
@@ -154,6 +157,23 @@ export async function startEngine(cfg: EngineConfig, deps: EngineDeps): Promise<
     throw new EngineStartError(toStoreError(e).message);
   }
 
+  // --- public read-only API: started with the engine, never blocks it ---
+  let api: ApiServer | null = null;
+  let httpPort: number | null = null;
+  if (cfg.http.enabled) {
+    api = createApiServer({
+      source: store, projects, config: cfg.http, log: log.child({ component: 'api' }),
+      runtime: { engineState: () => state, runner: (id) => runners.get(id)?.snapshot() ?? null },
+    });
+    try {
+      httpPort = await api.listen();
+    } catch (e) {
+      await store.close().catch(() => {});
+      await pool.end().catch(() => {});
+      throw new EngineStartError(e instanceof Error ? e.message : 'HTTP server failed to start');
+    }
+  }
+
   const running = [...runners.entries()].map(([id, r]) => r.run(abort.signal).catch((e) => log.error('runner_crashed', { project: id, error: e instanceof Error ? e.message : String(e) })));
   const statusTimer = cfg.statusLogIntervalMs > 0
     ? setInterval(() => void status().then((s) => log.info('engine_status', JSON.parse(jsonSafe(s)))).catch(() => {}), cfg.statusLogIntervalMs)
@@ -169,6 +189,7 @@ export async function startEngine(cfg: EngineConfig, deps: EngineDeps): Promise<
       state = 'stopping';
       log.info('engine_stopping', { reason, timeoutMs: cfg.shutdownTimeoutMs });
       if (statusTimer) clearInterval(statusTimer);
+      await api?.close().catch(() => {}); // end SSE streams first: clients reconnect with Last-Event-ID elsewhere/later
       abort.abort(); // wakes every sleeping runner
       limiter.drain(); // no new RPC request; those already in flight may finish
       const drained = (await Promise.race([Promise.allSettled(running).then(() => true as const), timeout(cfg.shutdownTimeoutMs)])) === true;
@@ -182,5 +203,5 @@ export async function startEngine(cfg: EngineConfig, deps: EngineDeps): Promise<
     })());
 
   log.info('engine_started', { projects: projects.length });
-  return { status, stop, stopped, meter };
+  return { status, stop, stopped, meter, httpPort };
 }

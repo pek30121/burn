@@ -59,7 +59,7 @@ async function envFor(db: BareSchema, extra: Record<string, string | undefined> 
 const fast = (cfg: EngineConfig, over: Partial<EngineConfig> = {}): EngineConfig => ({
   ...cfg, pollIntervalMs: 20, errorBackoff: { baseMs: 20, maxMs: 80 }, leaseRetryMs: 50, shutdownTimeoutMs: 3_000, statusLogIntervalMs: 0,
   rpc: { ...cfg.rpc, maxRetries: 1, baseDelayMs: 1 }, limits: { maxConcurrent: 4, minIntervalMs: 0 },
-  indexer: { ...cfg.indexer, pageSize: 3, backfillPagesPerSync: 5 }, ...over,
+  indexer: { ...cfg.indexer, pageSize: 3, backfillPagesPerSync: 5 }, http: { ...cfg.http, enabled: false }, ...over,
 });
 
 async function boot(db: BareSchema, chain: FakeChain, hooks: RpcHooks, o: { over?: Partial<EngineConfig>; env?: Record<string, string | undefined>; handler?: (e: LevelReachedEvent) => void | Promise<void> } = {}): Promise<Boot> {
@@ -368,7 +368,7 @@ test('[main] `npm start` process: indexes, then exits 0 on SIGTERM with a clean 
   try {
     const p = runMain({
       SOLANA_CLUSTER: 'devnet', SOLANA_RPC_URL: `${server.url}?api-key=PROC-SECRET-KEY-77`, DATABASE_URL: db.url, PROJECTS_CONFIG: await projectsFile(),
-      POLL_INTERVAL_MS: '1000', RPC_MIN_INTERVAL_MS: '0', INDEXER_PAGE_SIZE: '3', BACKFILL_PAGES_PER_SYNC: '5', STATUS_LOG_INTERVAL_MS: '0',
+      HTTP_ENABLED: 'false', POLL_INTERVAL_MS: '1000', RPC_MIN_INTERVAL_MS: '0', INDEXER_PAGE_SIZE: '3', BACKFILL_PAGES_PER_SYNC: '5', STATUS_LOG_INTERVAL_MS: '0',
     });
     await waitFor(async () => {
       const r = await pool.query("SELECT project_id, burn_count::int AS n FROM project_counters ORDER BY project_id").catch(() => ({ rows: [] }));
@@ -399,7 +399,7 @@ test('[main] a SIGTERM that arrives while the engine is still starting still end
   const db = await bareSchema();
   const server = await startRpcServer(chainWith(4, 0), newHooks());
   try {
-    const p = runMain({ SOLANA_CLUSTER: 'devnet', SOLANA_RPC_URL: server.url, DATABASE_URL: db.url, PROJECTS_CONFIG: await projectsFile(), STATUS_LOG_INTERVAL_MS: '0' });
+    const p = runMain({ SOLANA_CLUSTER: 'devnet', SOLANA_RPC_URL: server.url, DATABASE_URL: db.url, PROJECTS_CONFIG: await projectsFile(), STATUS_LOG_INTERVAL_MS: '0', HTTP_ENABLED: 'false' });
     await waitFor(() => p.out().includes('engine_starting'), 'start-up begun');
     p.child.kill('SIGTERM'); // before engine_started
     assert.equal(await p.exited, 0);

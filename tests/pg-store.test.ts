@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, readFile } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createPool, loadDbConfig } from '../src/db/config.ts';
@@ -18,6 +18,8 @@ const alpha = parseProjectConfig(projectInput());
 const beta = parseProjectConfig(projectInput({ id: 'beta', mint: MINT_B }));
 const L1 = 1_000_000_000n;
 const opts = { skip: pgSkip };
+const MIGRATIONS = new URL('../migrations/', import.meta.url);
+const migrationCount = async () => (await readdir(MIGRATIONS)).filter((f) => f.endsWith('.sql')).length;
 const finalized = (o: Partial<BurnInput> = {}) => burn({ commitment: 'finalized', ...o });
 
 /* ------------------------------ migrations ------------------------------ */
@@ -25,16 +27,17 @@ const finalized = (o: Partial<BurnInput> = {}) => burn({ commitment: 'finalized'
 test('[pg] migrations apply once, are reproducible, and concurrent runners do not clash', opts, async () => {
   const ctx = await freshSchema(); // freshSchema already applied 0001
   const again = await runMigrations(ctx.pool);
-  assert.deepEqual(again, { applied: [], alreadyApplied: 1 });
+  assert.deepEqual(again, { applied: [], alreadyApplied: await migrationCount() });
 
   // A brand-new schema migrated by 4 runners at the same time ends up with exactly one record.
   const other = await freshSchema().then(async (c) => {
-    await c.pool.query('DROP TABLE schema_migrations, index_issues, index_state, level_events, project_counters, burns, levels, projects CASCADE');
+    await c.pool.query('DROP TABLE schema_migrations, index_issues, index_state, project_events, level_events, project_counters, burns, levels, projects CASCADE');
     return c;
   });
   const results = await Promise.all([1, 2, 3, 4].map(() => runMigrations(other.newPool())));
-  assert.equal(results.reduce((n, r) => n + r.applied.length, 0), 1);
-  assert.equal((await other.pool.query('SELECT count(*)::int AS n FROM schema_migrations')).rows[0].n, 1);
+  const total = await migrationCount();
+  assert.equal(results.reduce((n, r) => n + r.applied.length, 0), total); // each migration applied exactly once overall
+  assert.equal((await other.pool.query('SELECT count(*)::int AS n FROM schema_migrations')).rows[0].n, total);
 });
 
 test('[pg] a migration modified after being applied is refused; numbering gaps are refused', opts, async () => {
@@ -52,11 +55,12 @@ test('[pg] a migration modified after being applied is refused; numbering gaps a
 test('[pg] a failing migration rolls back completely and is not recorded', opts, async () => {
   const ctx = await freshSchema();
   const dir = await mkdtemp(join(tmpdir(), 'mig-'));
-  await writeFile(join(dir, '0001_init.sql'), await readFile(new URL('../migrations/0001_init.sql', import.meta.url), 'utf8'));
-  await writeFile(join(dir, '0002_bad.sql'), 'CREATE TABLE half_done (id int); SELECT 1/0;');
+  const real = await migrationCount();
+  for (const f of (await readdir(MIGRATIONS)).filter((n) => n.endsWith('.sql'))) await writeFile(join(dir, f), await readFile(new URL(f, MIGRATIONS), 'utf8'));
+  await writeFile(join(dir, `${String(real + 1).padStart(4, '0')}_bad.sql`), 'CREATE TABLE half_done (id int); SELECT 1/0;');
   await assert.rejects(runMigrations(ctx.pool, dir), StoreError);
   assert.equal((await ctx.pool.query("SELECT to_regclass('half_done') AS t")).rows[0].t, null);
-  assert.equal((await ctx.pool.query('SELECT count(*)::int AS n FROM schema_migrations')).rows[0].n, 1);
+  assert.equal((await ctx.pool.query('SELECT count(*)::int AS n FROM schema_migrations')).rows[0].n, real);
 });
 
 /* ----------------------- uniqueness / exact amounts --------------------- */
