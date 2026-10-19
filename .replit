@@ -1,11 +1,14 @@
-# Replit (Devnet only): ONE container runs the test page + /rpc proxy (public port) AND the burn engine (PostgreSQL, indexers,
-# read-only API on 127.0.0.1, reached through the page's own origin). See deploy/README.md.
+# Replit, MAINNET (FLAPY): the burn engine alone serves the read-only public API on the public port (supervisor mainnetSpecs).
+# The network is ALSO pinned in the run commands below, so it does not depend on how Replit passes [env] to a deployment.
+# ROLLBACK TO DEVNET: replace the three values (DEPLOY_NETWORK=devnet, SOLANA_CLUSTER=devnet, PROJECTS_CONFIG=deploy/projects.devnet.json)
+# in [env] and in both run commands. See deploy/README.md and docs/MAINNET-LAUNCH.md.
 modules = ["nodejs-22"]
-run = "npm install --no-audit --no-fund --include=dev && npm run build:replit && npm run replit:start"
+run = "npm install --no-audit --no-fund --include=dev && npm run build:replit && DEPLOY_NETWORK=mainnet SOLANA_CLUSTER=mainnet-beta PROJECTS_CONFIG=deploy/projects.mainnet.json npm run replit:start"
 
 [env]
-SOLANA_CLUSTER = "devnet"
-PROJECTS_CONFIG = "deploy/projects.devnet.json"
+DEPLOY_NETWORK = "mainnet"
+SOLANA_CLUSTER = "mainnet-beta"
+PROJECTS_CONFIG = "deploy/projects.mainnet.json"
 WEB_CONFIG_FILE = "deploy/wallet-test-config.json"
 RPC_MONTHLY_CREDITS = "10000000"
 
@@ -17,7 +20,7 @@ channel = "stable-24_05"
 # for an engine that never sleeps, switch the deployment type to Reserved VM in the Publish panel (paid: see deploy/README.md).
 deploymentTarget = "autoscale"
 build = ["sh", "-c", "npm install --no-audit --no-fund --include=dev && npm run build:replit"]
-run = ["sh", "-c", "npm run replit:start"]
+run = ["sh", "-c", "DEPLOY_NETWORK=mainnet SOLANA_CLUSTER=mainnet-beta PROJECTS_CONFIG=deploy/projects.mainnet.json npm run replit:start"]
 
 [[ports]]
 localPort = 8080
