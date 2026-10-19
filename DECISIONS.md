@@ -291,3 +291,6 @@ Au démarrage (après le contrôle du hash de genèse, avant PostgreSQL), `getAc
 
 ## D33 — Switch Mainnet de la supervision Replit
 `DEPLOY_NETWORK=mainnet` (opt-in explicite) → moteur seul, API publique en lecture seule sur le port public, sans page wallet ni proxy `/rpc` (la page de test est Devnet uniquement). Fail-closed : `DATABASE_URL`, `HELIUS_API_KEY`, `PROJECTS_CONFIG` non-Devnet requis, `SOLANA_RPC_URL` interdit. Par défaut (variable absente) : Devnet inchangé, ce qui sert de retour arrière. Aucun fichier de projet Mainnet n'est commité tant que le mint réel n'a pas été fourni et passé par `mainnet:onboard`. Voir `docs/MAINNET-LAUNCH.md`.
+
+## D34 — Page Mainnet dans la même app (corrige D33)
+Le mode `DEPLOY_NETWORK=mainnet` lance aussi le serveur web (page + `/rpc` + relais `/api`) ; moteur sur 127.0.0.1. `WEB_CLUSTER` (devnet par défaut) choisit le réseau vérifié par hash de genèse ; la config de page doit avoir le même `cluster` sinon refus. Page à montant fixe (`fixedAmountUi`) pour le premier test Mainnet, contrôlée aussi par `checkFixedBurn` au moment de confirmer. Le relais `/api` transmet `Origin` et les en-têtes CORS du moteur (le moteur reste seul juge). Les sites externes appellent l'API via la même origine ou avec `CORS_ORIGINS`.

@@ -76,7 +76,7 @@ test('[web] the engine proxy is GET only and read-only; static files cannot esca
     assert.equal((await fetch(`${s.base}/api/v1/projects/x/status`, { method: 'DELETE' })).status, 405);
     const index = await fetch(`${s.base}/`);
     assert.equal(index.status, 200);
-    assert.match(await index.text(), /Burn — page de test wallet/);
+    assert.match(await index.text(), /Burn — page wallet/);
     for (const evil of ['/../package.json', '/..%2fpackage.json', '/%2e%2e/%2e%2e/.env', '/dist/../../package.json', '/app.js%00.json']) {
       const res = await fetch(`${s.base}${evil}`);
       assert.ok(res.status === 404 || res.status === 400, `${evil} -> ${res.status}`);
@@ -164,4 +164,41 @@ test('[web] /rpc answers 503 until the upstream network is verified (the page it
     ready = true;
     assert.equal(await call(), 200);
   } finally { server.closeAllConnections(); server.close(); }
+});
+
+test('[web] webNetwork: Devnet by default, Mainnet only when asked, Helius host derived from the cluster, bad values refused', async () => {
+  const { webNetwork } = await import('../scripts/wallet-test/server.ts');
+  assert.equal(webNetwork({}).cluster, 'devnet');
+  assert.match(webNetwork({ HELIUS_API_KEY: 'KEY12345678' }).upstream, /^https:\/\/devnet\.helius-rpc\.com\//);
+  const m = webNetwork({ WEB_CLUSTER: 'mainnet-beta', HELIUS_API_KEY: 'KEY12345678' });
+  assert.equal(m.cluster, 'mainnet-beta');
+  assert.match(m.upstream, /^https:\/\/mainnet\.helius-rpc\.com\//);
+  assert.doesNotMatch(m.label, /KEY12345678/);
+  assert.equal(webNetwork({ WEB_CLUSTER: 'mainnet-beta' }).upstream, 'https://api.mainnet-beta.solana.com');
+  assert.throws(() => webNetwork({ WEB_CLUSTER: 'testnet' }), /WEB_CLUSTER/);
+});
+
+test('[web] /wallet-test redirects to the page; the engine CORS answer and preflight are relayed unchanged, the Origin is forwarded', async () => {
+  const s = await start({
+    upstream: (url, init) => {
+      const h = new Headers(init?.headers);
+      const origin = h.get('origin');
+      const headers: Record<string, string> = { 'content-type': 'application/json', vary: 'Origin' };
+      if (origin === 'https://site.example') headers['access-control-allow-origin'] = origin;
+      return new Response(init?.method === 'OPTIONS' ? null : '{"ok":true}', { status: init?.method === 'OPTIONS' ? 204 : 200, headers });
+    },
+  });
+  try {
+    const r = await fetch(`${s.base}/wallet-test`, { redirect: 'manual' });
+    assert.equal(r.status, 302);
+    assert.equal(r.headers.get('location'), '/');
+    const ok = await fetch(`${s.base}/api/v1/projects/flapy/status`, { headers: { origin: 'https://site.example' } });
+    assert.equal(ok.headers.get('access-control-allow-origin'), 'https://site.example');
+    const other = await fetch(`${s.base}/api/v1/projects/flapy/status`, { headers: { origin: 'https://evil.example' } });
+    assert.equal(other.headers.get('access-control-allow-origin'), null);
+    const pre = await fetch(`${s.base}/api/v1/projects/flapy/status`, { method: 'OPTIONS', headers: { origin: 'https://site.example', 'access-control-request-method': 'GET' } });
+    assert.equal(pre.status, 204);
+    assert.equal(pre.headers.get('access-control-allow-origin'), 'https://site.example');
+    assert.equal((await fetch(`${s.base}/api/v1/projects/flapy/status`, { method: 'POST' })).status, 405);
+  } finally { await s.close(); }
 });

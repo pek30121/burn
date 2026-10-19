@@ -6,3 +6,4 @@ export { createJsonRpc, type WalletRpc } from './rpc.ts';
 export { assessBurn, parseMint, parseTokenAccount, type BurnEligibility } from './token-info.ts';
 export { assertSameMessage, buildUnsignedBurn, burnCheckedInstruction, verifySignedTransaction, type WalletAdditions } from './tx.ts';
 export { adaptStandardWallet, chainOfCluster, createWalletRegistry, type WalletProvider, type WalletRegistry } from './wallet-standard.ts';
+export { checkFixedBurn, type FixedBurnPreview } from './fixed-burn.ts';

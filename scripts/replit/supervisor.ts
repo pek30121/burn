@@ -5,7 +5,8 @@
  *  - a crashing engine never takes the page down, and the page never hides an engine failure (exit codes are logged);
  *  - SIGTERM / SIGINT stop both children cleanly (SIGKILL after a grace period) and exit 0;
  *  - Devnet by default (rollback target): any other SOLANA_CLUSTER is refused. Mainnet only when DEPLOY_NETWORK=mainnet is set
- *    explicitly (engine only, read-only public API on the public port, no wallet page, no /rpc proxy);
+ *    explicitly (engine on 127.0.0.1 + the web server on the public port: burn page for the configured Mainnet projects, allowlisted
+ *    /rpc proxy checked against the Mainnet genesis hash, and the engine's read-only API relayed under /api, CORS decided by the engine);
  *  - without DATABASE_URL (no Replit database attached yet) only the web server starts, with an explicit warning;
  *  - no secret is ever printed: only names, exit codes and delays.
  * Plain Node (compiled by tsc): it needs no TypeScript support at runtime. */
@@ -138,22 +139,34 @@ export function replitSpecs(env: Record<string, string | undefined>, cwd: string
   return { specs, warnings };
 }
 
-/** Mainnet: the engine alone, serving the read-only public API on the public port. Fail-closed: every prerequisite is explicit. */
+/** Mainnet: the engine on 127.0.0.1 and the web server (burn page, /rpc, /api relay) on the public port. Fail-closed: every prerequisite is explicit. */
 export function mainnetSpecs(env: Record<string, string | undefined>, cwd: string = process.cwd()): { specs: ChildSpec[]; warnings: string[] } {
   const missing: string[] = [];
   if (!env.DATABASE_URL) missing.push('DATABASE_URL');
   if (!env.HELIUS_API_KEY) missing.push('HELIUS_API_KEY');
   if (!env.PROJECTS_CONFIG || /devnet/i.test(env.PROJECTS_CONFIG)) missing.push('PROJECTS_CONFIG (a Mainnet file such as deploy/projects.mainnet.json)');
-  if (env.SOLANA_RPC_URL) missing.push('SOLANA_RPC_URL must be unset (the Helius Mainnet host is derived from HELIUS_API_KEY)');
+  if (env.WEB_CONFIG_FILE && /devnet|wallet-test-config/i.test(env.WEB_CONFIG_FILE)) missing.push('WEB_CONFIG_FILE (a Mainnet page config such as deploy/wallet-config.mainnet.json)');
+  if (env.SOLANA_RPC_URL || env.WEB_UPSTREAM_RPC_URL) missing.push('SOLANA_RPC_URL and WEB_UPSTREAM_RPC_URL must be unset (the Helius Mainnet host is derived from HELIUS_API_KEY)');
   if (missing.length) throw new Error(`refusing to start on Mainnet, missing or invalid: ${missing.join(', ')}`);
   const port = env.PORT ?? env.WEB_PORT ?? '8080';
+  const common = { ...env, SOLANA_CLUSTER: 'mainnet-beta', WEB_CLUSTER: 'mainnet-beta' };
   const engineEnv: Record<string, string | undefined> = {
-    ...env, SOLANA_CLUSTER: 'mainnet-beta', HTTP_ENABLED: 'true', HTTP_HOST: '0.0.0.0', HTTP_PORT: port, TRUST_PROXY: 'true',
+    ...common, HTTP_ENABLED: 'true', HTTP_HOST: '127.0.0.1', HTTP_PORT: '8787', TRUST_PROXY: 'true',
     RPC_MONTHLY_CREDITS: env.RPC_MONTHLY_CREDITS ?? '10000000', PORT: undefined,
+  };
+  const webEnv: Record<string, string | undefined> = {
+    ...common, WEB_HOST: '0.0.0.0', WEB_PORT: port, WEB_TRUST_PROXY: '1', ENGINE_URL: 'http://127.0.0.1:8787',
+    WEB_CONFIG_FILE: env.WEB_CONFIG_FILE ?? 'deploy/wallet-config.mainnet.json', WEB_ROOT: env.WEB_ROOT ?? `${cwd}/web`,
   };
   const warnings: string[] = [];
   if (!env.CORS_ORIGINS) warnings.push('CORS_ORIGINS is not set: browsers on other origins cannot read the public API (set it to your front-end origin).');
-  return { specs: [{ name: 'engine', command: process.execPath, args: [`${cwd}/dist/main.js`], env: engineEnv }], warnings };
+  return {
+    specs: [
+      { name: 'engine', command: process.execPath, args: [`${cwd}/dist/main.js`], env: engineEnv },
+      { name: 'web', command: process.execPath, args: [`${cwd}/web/serve-dist/scripts/wallet-test/server.js`], env: webEnv },
+    ],
+    warnings,
+  };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

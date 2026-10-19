@@ -1,6 +1,6 @@
 /* Minimal test harness for the wallet module (src/wallet). No design, no animation: it only exercises the module.
  * Counter source: the engine API only (never computed here). */
-import { createBurnController, createEngineClient, createJsonRpc, createWalletRegistry } from '../dist/wallet/index.js';
+import { checkFixedBurn, createBurnController, createEngineClient, createJsonRpc, createWalletRegistry } from '../dist/wallet/index.js';
 
 const $ = (id) => document.getElementById(id);
 const q = new URLSearchParams(location.search);
@@ -23,6 +23,10 @@ const engineBase = q.get('engine') ?? config.engineBase ?? '';
 const rpcAbs = rpcUrl.startsWith('/') ? location.origin + rpcUrl : rpcUrl;
 
 $('net').textContent = `(${config.cluster})`;
+const mainnet = config.cluster === 'mainnet-beta';
+const fixedUi = typeof config.fixedAmountUi === 'string' ? config.fixedAmountUi : null; // e.g. "1": this page burns exactly that amount
+document.title = `Burn wallet (${config.cluster})`;
+$('warn').textContent = (mainnet ? 'MAINNET — de vrais tokens seront brûlés, définitivement. ' : 'Devnet uniquement. ') + (fixedUi ? `Cette page brûle exactement ${fixedUi} token, jamais plus. ` : '') + "Aucune clé n'est demandée : la signature se fait dans votre portefeuille, avec votre confirmation.";
 $('cfgKv').innerHTML = '';
 for (const [k, v] of [['RPC navigateur', rpcUrl.replace(/api-key=[^&]*/i, 'api-key=***')], ['Moteur (API publique)', engineBase || '(même origine)'], ['Projets', String(config.projects.length)]]) {
   $('cfgKv').insertAdjacentHTML('beforeend', `<b>${k}</b><span></span>`);
@@ -82,6 +86,7 @@ function render(s) {
   $('disconnect').disabled = !s.account;
   $('refresh').disabled = !s.account;
   const idle = !['connecting', 'loading_token', 'previewing', 'awaiting_signature', 'sending', 'confirming'].includes(s.status);
+  if (fixedUi) { $('amount').value = fixedUi; $('amount').readOnly = true; $('max').disabled = true; if (!s.amountInput && s.account) controller.setAmount(fixedUi); }
   $('preview').disabled = !(idle && s.holding && s.amountRaw && s.amountRaw <= s.holding.availableRaw);
   $('confirm').disabled = !(idle && s.preview && s.preview.simulation.ok);
   $('reset').disabled = !idle;
@@ -97,7 +102,7 @@ function render(s) {
   }
   $('txPhase').textContent = s.tx.phase + (s.tx.slot ? ` (slot ${s.tx.slot})` : '') + (s.tx.signature ? (s.tx.messageVerified ? (s.tx.walletAdditions ? ` — message vérifié (le wallet a ajouté ${s.tx.walletAdditions.lighthouse} instruction(s) de protection Lighthouse et ${s.tx.walletAdditions.computeBudget} de frais ; version ${s.tx.walletAdditions.version}; frais de priorité max ${s.tx.walletAdditions.priorityFeeLamports} lamports)` : ' — message vérifié') : ' — message non vérifiable (wallet signAndSend)') : '');
   $('sig').innerHTML = '';
-  if (s.tx.signature) { const a = document.createElement('a'); a.href = `https://explorer.solana.com/tx/${s.tx.signature}?cluster=${config.cluster === 'devnet' ? 'devnet' : ''}`; a.target = '_blank'; a.rel = 'noopener'; a.textContent = s.tx.signature; $('sig').append(a); } else $('sig').textContent = '—';
+  if (s.tx.signature) { const a = document.createElement('a'); a.href = `https://solscan.io/tx/${s.tx.signature}${mainnet ? '' : '?cluster=devnet'}`; a.target = '_blank'; a.rel = 'noopener'; a.textContent = s.tx.signature; $('sig').append(a); } else $('sig').textContent = '—';
   $('enginePhase').textContent = { idle: '—', waiting: 'en attente du moteur…', counted: `COMPTÉ par le moteur (événement ${s.engine.burnEventId})`, timeout: 'délai dépassé : pas encore listé par le moteur (pas une erreur)' }[s.engine.phase];
   const e = s.counter.engine;
   $('counter').textContent = e ? `${e.finalized} (${e.finalizedRaw} brut)${e.synced ? '' : ' [moteur non synchronisé]'}` : s.counter.status === 'unavailable' ? 'indisponible' : '—';
@@ -115,7 +120,7 @@ $('refresh').onclick = () => void act('refresh', () => controller.refresh());
 $('amount').oninput = () => controller.setAmount($('amount').value);
 $('max').onclick = () => { controller.setAmount('max'); $('amount').value = controller.getState().amountInput; };
 $('preview').onclick = () => void act('preview', () => controller.prepare());
-$('confirm').onclick = () => { const p = controller.getState().preview; if (p) void act('confirm', () => controller.confirm(p.id)); };
+$('confirm').onclick = () => { const p = controller.getState().preview; if (fixedUi && checkFixedBurn(p, project.decimals, fixedUi) !== null) { log(`refused: this page burns exactly ${fixedUi} token only`); return; } if (p) void act('confirm', () => controller.confirm(p.id)); };
 $('reset').onclick = () => { controller.reset(); $('amount').value = ''; };
 
 // Live counter straight from the engine (independent of any wallet), so a change can be seen after a burn is counted.

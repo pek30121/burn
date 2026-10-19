@@ -1,15 +1,17 @@
 /* `npm run web:serve` — serves the wallet test page and gives the BROWSER what it needs without exposing any server secret:
  *
  *   /            static test page (web/wallet-test) and /dist (the wallet module built by `npm run web:build`)
- *   /rpc         allowlisted JSON-RPC proxy to the upstream Devnet node. The Helius key stays in this process only: the
- *                browser sees `/rpc`. Allowlist = what src/wallet needs; no batches; size and rate limits; Devnet only
- *                (the upstream genesis hash is checked at start, so this can never be pointed at Mainnet by mistake).
+ *   /rpc         allowlisted JSON-RPC proxy to the upstream node. The Helius key stays in this process only: the
+ *                browser sees `/rpc`. Allowlist = what src/wallet needs; no batches; size and rate limits. The network is
+ *                WEB_CLUSTER (devnet by default, or mainnet-beta): the upstream genesis hash must match it, otherwise the
+ *                proxy refuses to relay, so the page can never talk to the wrong network.
+ *   /wallet-test redirects to / (the same page).
  *   /api, /health   reverse proxy (GET) to the engine's public read-only API, so the page needs a single origin.
  *
  * Env: HELIUS_API_KEY or WEB_UPSTREAM_RPC_URL (upstream), ENGINE_URL (default http://127.0.0.1:8787),
  *      WEB_PORT (8788; PORT is used when WEB_PORT is unset), WEB_HOST (127.0.0.1; use 0.0.0.0 on a LAN / hosting),
  *      WEB_RATE_PER_MINUTE (120), WEB_TRUST_PROXY=1 (behind a reverse proxy), WEB_CONFIG_FILE (served as /config.json),
- *      WEB_ROOT (the web/ directory, when running the compiled copy from elsewhere). */
+ *      WEB_CLUSTER (devnet | mainnet-beta), WEB_ROOT (the web/ directory, when running the compiled copy from elsewhere). */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { existsSync, readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
@@ -96,24 +98,28 @@ export function createWebServer(o: WebServerOptions) {
 
   let openStreams = 0;
   async function engineProxy(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
-    if (req.method !== 'GET') return json(res, 405, { error: 'GET only (the engine API is read-only)' });
+    if (req.method !== 'GET' && req.method !== 'OPTIONS') return json(res, 405, { error: 'GET only (the engine API is read-only)' });
     const isStream = /^\/api\/v1\/projects\/[^/]+\/stream$/.test(new URL(path, 'http://x').pathname);
     // The engine rate-limits and caps streams per client address: hand it the real one (single value, we are its only proxy).
     const headers: Record<string, string> = { accept: isStream ? 'text/event-stream' : 'application/json', 'x-forwarded-for': clientIp(req) };
+    // CORS stays decided by the engine (CORS_ORIGINS): hand it the caller's Origin and relay its answer unchanged.
+    for (const h of ['origin', 'access-control-request-method', 'access-control-request-headers'] as const) { const v = req.headers[h]; if (typeof v === 'string') headers[h] = v; }
     const lastEventId = req.headers['last-event-id'];
     if (isStream && typeof lastEventId === 'string') headers['last-event-id'] = lastEventId;
     if (isStream && openStreams >= (o.maxStreams ?? 100)) return json(res, 503, { error: { code: 'stream_capacity', message: 'Too many open streams.' } });
     const abort = new AbortController();
     res.on('close', () => abort.abort());
     try {
-      const up = await doFetch(new URL(path, o.engineUrl), { headers, signal: isStream ? abort.signal : AbortSignal.timeout(10_000) });
+      const up = await doFetch(new URL(path, o.engineUrl), { method: req.method, headers, signal: isStream ? abort.signal : AbortSignal.timeout(10_000) });
+      const cors: Record<string, string> = {};
+      up.headers.forEach((v, k) => { if (k.startsWith('access-control-') || k === 'vary' || k === 'allow') cors[k] = v; });
       if (!isStream || !up.body) {
-        res.writeHead(up.status, { 'content-type': up.headers.get('content-type') ?? 'application/json', 'cache-control': 'no-store' });
+        res.writeHead(up.status, { ...cors, 'content-type': up.headers.get('content-type') ?? 'application/json', 'cache-control': 'no-store' });
         res.end(Buffer.from(await up.arrayBuffer()));
         return;
       }
       // Server-Sent Events: pass the stream through unbuffered; closing either side closes the other.
-      res.writeHead(up.status, { 'content-type': up.headers.get('content-type') ?? 'text/event-stream', 'cache-control': 'no-store', 'x-accel-buffering': 'no', connection: 'keep-alive' });
+      res.writeHead(up.status, { ...cors, 'content-type': up.headers.get('content-type') ?? 'text/event-stream', 'cache-control': 'no-store', 'x-accel-buffering': 'no', connection: 'keep-alive' });
       openStreams++;
       try {
         const reader = up.body.getReader();
@@ -152,6 +158,7 @@ export function createWebServer(o: WebServerOptions) {
         const ip = clientIp(req);
         if (url.pathname === '/rpc' || url.pathname.startsWith('/api/')) if (limited(ip)) return json(res, 429, { error: 'rate limited' });
         if (url.pathname === '/rpc') return await rpcProxy(req, res);
+        if (url.pathname === '/wallet-test' || url.pathname === '/wallet-test/') { res.writeHead(302, { location: '/' }); return void res.end(); }
         if (url.pathname === '/config.json' && o.config !== undefined) return json(res, 200, o.config);
         if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/health/')) return await engineProxy(req, res, url.pathname + url.search);
         if (req.method !== 'GET') return json(res, 405, { error: 'GET only' });
@@ -163,18 +170,28 @@ export function createWebServer(o: WebServerOptions) {
   });
 }
 
+/** The network this server relays to, from the environment (pure: tested). */
+export function webNetwork(env: Record<string, string | undefined>): { cluster: 'devnet' | 'mainnet-beta'; upstream: string; label: string } {
+  const cluster = env.WEB_CLUSTER ?? 'devnet';
+  if (cluster !== 'devnet' && cluster !== 'mainnet-beta') throw new Error('WEB_CLUSTER must be "devnet" or "mainnet-beta"');
+  const host = cluster === 'devnet' ? 'devnet' : 'mainnet';
+  const key = env.HELIUS_API_KEY;
+  if (env.WEB_UPSTREAM_RPC_URL) return { cluster, upstream: env.WEB_UPSTREAM_RPC_URL, label: 'custom upstream' };
+  if (key) return { cluster, upstream: `https://${host}.helius-rpc.com/?api-key=${key}`, label: `Helius ${cluster}` };
+  return { cluster, upstream: cluster === 'devnet' ? 'https://api.devnet.solana.com' : 'https://api.mainnet-beta.solana.com', label: `public ${cluster}` };
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const key = process.env.HELIUS_API_KEY;
-  const upstream = process.env.WEB_UPSTREAM_RPC_URL ?? (key ? `https://devnet.helius-rpc.com/?api-key=${key}` : 'https://api.devnet.solana.com');
+  const { cluster, upstream, label } = webNetwork(process.env);
   // The page must come up even if the upstream is briefly unreachable at start: /rpc answers 503 until the genesis hash proves
-  // the upstream is Devnet (checked again every few seconds); a DIFFERENT network is fatal, never relayed.
+  // the upstream is the configured network (checked again every few seconds); a DIFFERENT network is fatal, never relayed.
   let verified = false;
   const verify = async (): Promise<void> => {
     for (;;) {
       try {
         const genesis = ((await (await fetch(upstream, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getGenesisHash' }), signal: AbortSignal.timeout(10_000) })).json()) as { result?: string }).result;
-        if (genesis === GENESIS_HASHES.devnet) { verified = true; console.log('upstream RPC verified: Devnet'); return; }
-        if (typeof genesis === 'string') { console.error('refusing to relay: the upstream RPC is not Solana Devnet'); process.exit(1); }
+        if (genesis === GENESIS_HASHES[cluster]) { verified = true; console.log(`upstream RPC verified: ${cluster}`); return; }
+        if (typeof genesis === 'string') { console.error(`refusing to relay: the upstream RPC is not Solana ${cluster}`); process.exit(1); }
       } catch { /* unreachable or malformed: retry */ }
       await new Promise((r) => setTimeout(r, 5_000));
     }
@@ -182,7 +199,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   void verify();
   const port = Number(process.env.WEB_PORT ?? process.env.PORT ?? 8788);
   const host = process.env.WEB_HOST ?? '127.0.0.1';
+  const config = process.env.WEB_CONFIG_FILE ? JSON.parse(readFileSync(process.env.WEB_CONFIG_FILE, 'utf8')) : undefined;
+  if (config && config.cluster !== cluster) { console.error(`refusing to start: WEB_CONFIG_FILE is for ${config.cluster} but WEB_CLUSTER is ${cluster}`); process.exit(1); }
   const server = createWebServer({ upstreamRpc: upstream, engineUrl: process.env.ENGINE_URL ?? 'http://127.0.0.1:8787', ratePerMinute: Number(process.env.WEB_RATE_PER_MINUTE ?? 120), rpcReady: () => verified, trustProxy: process.env.WEB_TRUST_PROXY === '1',
-    ...(process.env.WEB_CONFIG_FILE ? { config: JSON.parse(readFileSync(process.env.WEB_CONFIG_FILE, 'utf8')) } : {}) });
-  server.listen(port, host, () => console.log(`wallet test page: http://${host === '0.0.0.0' ? 'localhost' : host}:${port}/  (RPC: ${process.env.WEB_UPSTREAM_RPC_URL ? 'custom upstream' : key ? 'Helius Devnet' : 'public Devnet'} via /rpc, key never sent to the browser; engine: ${process.env.ENGINE_URL ?? 'http://127.0.0.1:8787'})`));
+    ...(config ? { config } : {}) });
+  server.listen(port, host, () => console.log(`wallet page: http://${host === '0.0.0.0' ? 'localhost' : host}:${port}/  (network: ${cluster}; RPC: ${label} via /rpc, key never sent to the browser; engine: ${process.env.ENGINE_URL ?? 'http://127.0.0.1:8787'})`));
 }
