@@ -1,4 +1,6 @@
-# Burn engine + test page on ONE Replit app (Devnet only)
+# Burn engine + web server on ONE Replit app
+
+> **Current state:** the app is pinned to **Mainnet** in `.replit` (see `docs/MAINNET-LAUNCH.md`); the web server also serves the VIRUS.EXE site under `/virus/`. The Devnet description below is the historical default. For the audit, the preview, Git synchronisation and the publication checklist see **`docs/REPLIT-WORKFLOW.md`**.
 
 `.replit` runs `scripts/replit/supervisor.ts` (compiled), which keeps two processes alive in the same container:
 

@@ -46,6 +46,8 @@ export interface WebServerOptions {
   trustProxy?: boolean;
   /** /rpc answers 503 until this returns true (the upstream network has been verified). */
   rpcReady?: () => boolean;
+  /** Served as GET /build-info: which build is really running (commit, branch, build time, network). No secret. */
+  buildInfo?: () => unknown;
   /** Maximum simultaneously proxied event streams (the engine adds its own per-client caps). */
   maxStreams?: number;
 }
@@ -164,6 +166,7 @@ export function createWebServer(o: WebServerOptions) {
         const ip = clientIp(req);
         if (url.pathname === '/rpc' || url.pathname.startsWith('/api/')) if (limited(ip)) return json(res, 429, { error: 'rate limited' });
         if (url.pathname === '/rpc') return await rpcProxy(req, res);
+        if (url.pathname === '/build-info') return json(res, 200, o.buildInfo ? o.buildInfo() : { commit: 'unknown' });
         if (url.pathname === '/virus') { res.writeHead(302, { location: '/virus/' }); return void res.end(); }
         if (url.pathname === '/wallet-test' || url.pathname === '/wallet-test/') { res.writeHead(302, { location: '/' }); return void res.end(); }
         if (url.pathname === '/config.json' && o.config !== undefined) return json(res, 200, o.config);
@@ -208,7 +211,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const host = process.env.WEB_HOST ?? '127.0.0.1';
   const config = process.env.WEB_CONFIG_FILE ? JSON.parse(readFileSync(process.env.WEB_CONFIG_FILE, 'utf8')) : undefined;
   if (config && config.cluster !== cluster) { console.error(`refusing to start: WEB_CONFIG_FILE is for ${config.cluster} but WEB_CLUSTER is ${cluster}`); process.exit(1); }
-  const server = createWebServer({ upstreamRpc: upstream, engineUrl: process.env.ENGINE_URL ?? 'http://127.0.0.1:8787', ratePerMinute: Number(process.env.WEB_RATE_PER_MINUTE ?? 120), rpcReady: () => verified, trustProxy: process.env.WEB_TRUST_PROXY === '1',
+  const buildInfo = (): unknown => {
+    let file: Record<string, unknown> = {};
+    try { file = JSON.parse(readFileSync(process.env.BUILD_INFO_FILE ?? join(ROOT, 'serve-dist', 'build-info.json'), 'utf8')); } catch { /* not generated: reported as unknown */ }
+    return { commit: 'unknown', branch: 'unknown', builtAt: null, ...file, network: process.env.DEPLOY_NETWORK ?? 'devnet', startedAt };
+  };
+  const startedAt = new Date().toISOString();
+  const server = createWebServer({ buildInfo, upstreamRpc: upstream, engineUrl: process.env.ENGINE_URL ?? 'http://127.0.0.1:8787', ratePerMinute: Number(process.env.WEB_RATE_PER_MINUTE ?? 120), rpcReady: () => verified, trustProxy: process.env.WEB_TRUST_PROXY === '1',
     ...(config ? { config } : {}) });
   server.listen(port, host, () => console.log(`wallet page: http://${host === '0.0.0.0' ? 'localhost' : host}:${port}/  (network: ${cluster}; RPC: ${label} via /rpc, key never sent to the browser; engine: ${process.env.ENGINE_URL ?? 'http://127.0.0.1:8787'})`));
 }

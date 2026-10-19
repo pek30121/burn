@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": false, "outDir": "web/serve-dist", "rootDir": ".", "declaration": false, "sourceMap": false, "types": ["node"] },
+  "include": ["scripts/virus-preview/server.ts"]
+}
