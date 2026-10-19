@@ -15,7 +15,7 @@
   VX.project = {
     projectId: 'virus', // id of the project in the engine
     cluster: 'mainnet-beta', // the burn window refuses any other network
-    mint: null, // expected mint (cross-check only; the engine is the source of truth). null until the token exists.
+    mint: 'EuhDQM4c9TsyytKDDj5PkAxoL2n9zUh9bcE8tdDkpump', // expected mint (cross-check only; the engine is the source of truth). While the engine has no project "virus" the site stays on NO TOKEN YET; if the engine reports another mint the bridge refuses to go READY.
     engineBase: '', // '' = same origin as this page (the Replit server relays /api/v1 to the engine)
     rpcUrl: '/rpc', // same-origin allow-listed RPC proxy: the Helius key never reaches the browser
     walletModuleUrl: '/dist/wallet/index.js', // the validated wallet module, served by the same server

@@ -1,0 +1,17 @@
+{
+  "_comment": "VIRUS.EXE pre-launch record. NOT read by the engine (the engine only reads PROJECTS_CONFIG). Decimals, token program and supply are deliberately absent: they are read from the chain by `npm run virus:prelaunch` once the mint exists.",
+  "id": "virus",
+  "name": "VIRUS.EXE",
+  "ticker": "VIRUS",
+  "cluster": "mainnet-beta",
+  "mint": "EuhDQM4c9TsyytKDDj5PkAxoL2n9zUh9bcE8tdDkpump",
+  "levels": [
+    { "id": "dormant", "name": "Dormant File", "threshold": "0" },
+    { "id": "seed", "name": "Glitch Seed", "threshold": "10000" },
+    { "id": "bug", "name": "Bug Form", "threshold": "50000" },
+    { "id": "parasite", "name": "Parasite Form", "threshold": "150000" },
+    { "id": "worm", "name": "Worm Form", "threshold": "400000" },
+    { "id": "overmind", "name": "Overmind", "threshold": "1000000" },
+    { "id": "god", "name": "System God", "threshold": "2500000" }
+  ]
+}

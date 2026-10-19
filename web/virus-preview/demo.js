@@ -95,7 +95,7 @@
   }
   // simulated transactions do not exist on any explorer: never link them to one
   if (window.VX) {
-    if (window.VX.project) window.VX.project.explorerTxUrl = '#demo-simulated-transaction-{tx}';
+    if (window.VX.project) { window.VX.project.explorerTxUrl = '#demo-simulated-transaction-{tx}'; window.VX.project.mint = null; } // the demo mint is a made-up constant: never cross-check it against the real planned mint
     if (window.VX.config) window.VX.config.explorerTxUrl = '#demo-simulated-transaction-{tx}';
   }
   fetch('/demo/api/state').then((r) => r.json()).then((s) => { demoWallet(s.account); banner(); }).catch(() => banner());

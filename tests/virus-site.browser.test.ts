@@ -3,7 +3,7 @@
  * no network, no key, no Mainnet, no transaction. Skipped (and reported as skipped, never as passed) when Playwright/Chromium is absent. */
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { test } from 'node:test';
 import { compileMessage, Keypair, type Instruction } from '../scripts/devnet/chain.ts';
@@ -90,6 +90,8 @@ async function bootSite(o: { withProject: boolean; balanceRaw?: bigint }) {
   page.on('console', (m: any) => { if (m.type() === 'error' && !/fonts\.g|ERR_(INTERNET|NAME|CONNECTION|TUNNEL|PROXY)|Failed to load resource/i.test(m.text())) errors.push(m.text()); });
   // fonts come from Google: block them so the test needs no internet
   await ctx.route(/fonts\.(googleapis|gstatic)\.com/, (route: any) => route.abort());
+  // the shipped project.js pins the planned real mint (cross-check); this mock engine serves a test mint, so only that value is swapped
+  await ctx.route(/\/virus\/js\/project\.js/, (route: any) => route.fulfill({ status: 200, contentType: 'text/javascript', body: readFileSync('web/virus/js/project.js', 'utf8').replace(/mint: '[1-9A-HJ-NP-Za-km-z]{32,44}'/, `mint: '${MINT}'`) }));
 
   const flags = { phantomLike: false, signed: 0 };
   await page.exposeFunction('__nodeSign', (txB64: string) => {

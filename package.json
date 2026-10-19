@@ -32,6 +32,7 @@
     "mainnet:scan": "node scripts/mainnet/scan.ts",
     "mainnet:reconcile": "node scripts/mainnet/reconcile.ts",
     "mainnet:onboard": "node scripts/mainnet/onboard.ts",
+    "virus:prelaunch": "node scripts/mainnet/virus-prelaunch.ts",
     "virus:preview": "npm run web:build && tsc -p tsconfig.preview.json && node web/serve-dist/scripts/virus-preview/server.js",
     "verify:deploy": "node scripts/replit/verify-deploy.mjs"
   },
