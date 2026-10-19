@@ -26,6 +26,13 @@ export class TxError extends Error {
 }
 
 export const LIGHTHOUSE_PROGRAM = 'L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95';
+/** Lighthouse instructions that are PURE READ-ONLY ASSERTIONS on ONE target account (they can only fail the transaction, never move
+ * or change anything): AssertAccountInfo 5, AssertAccountInfoMulti 6, AssertTokenAccount 9, AssertTokenAccountMulti 10. Numbers read from the
+ * program's published client (each takes a single read-only `targetAccount`) and cross-checked on real Mainnet transactions (6 and 10 seen, 1
+ * account each, 6 targeting the signer's own account, which is exactly what Phantom adds). Everything else is refused, notably
+ * MemoryWrite 0 / MemoryClose 1 (they take a payer signer and move lamports) and every other assertion kind. */
+export const LIGHTHOUSE_ASSERTIONS: ReadonlySet<number> = new Set([5, 6, 9, 10]);
+const MAX_LIGHTHOUSE_DATA = 512;
 /** A wallet-added priority fee above this (lamports, worst case) is refused: the preview showed only the base fee. */
 export const MAX_WALLET_PRIORITY_FEE_LAMPORTS = 500_000n;
 
@@ -190,9 +197,11 @@ export const fromBase64 = (b64: string): Uint8Array => Uint8Array.from(atob(b64)
  *     - the recent blockhash is ours (the expiry tracking depends on it);
  *     - no address lookup table is used (accounts stay fully visible);
  *     - exactly one instruction is our BurnChecked: same token program, same token account, mint and owner, same amount and decimals;
- *     - every other instruction belongs to an allowlist: ComputeBudget (limit / price, with a capped worst-case fee) and the
- *       Lighthouse assertion program, and none of those instructions references a signer account (so none can act with
- *       the owner's authority).
+ *     - every other instruction belongs to an allowlist: ComputeBudget (limit / price, with a capped worst-case fee) and
+ *       Lighthouse READ-ONLY ASSERTIONS (LIGHTHOUSE_ASSERTIONS): exactly one target account, which must be one of the burn's
+ *       own accounts (owner, token account, mint) and no key the wallet introduced. Phantom's assertions legitimately target
+ *       the owner's own account (balance checks); an assertion cannot act with the owner's authority, any other Lighthouse
+ *       instruction (memory write/close, unknown) is refused.
  * Anything else (another program, a bigger burn, a different destination, a second signer...) is refused with a public
  * explanation of what differs. */
 
@@ -314,7 +323,6 @@ export function verifyMessageSemantics(actual: ParsedMessage, expected: ParsedMe
   let price = 0n;
   for (const ix of actual.instructions) {
     const program = keyAt(ix.programIdIndex);
-    const touchesSigner = ix.accounts.some((a) => a < actual.numRequiredSignatures);
     if (program === tokenProgramId) {
       const [tokenAccount, mint, owner] = ix.accounts.map(keyAt);
       const same = ix.accounts.length === 3 && tokenAccount === params.tokenAccount && mint === params.mint && owner === params.owner &&
@@ -330,7 +338,12 @@ export function verifyMessageSemantics(actual: ParsedMessage, expected: ParsedMe
       else refuse('an unsupported compute budget instruction', expected, actual);
       computeBudget++;
     } else if (program === LIGHTHOUSE_PROGRAM) {
-      if (touchesSigner) refuse('a Lighthouse instruction references the signer account', expected, actual);
+      const disc = ix.data[0];
+      if (disc === undefined || !LIGHTHOUSE_ASSERTIONS.has(disc)) refuse(`a Lighthouse instruction that is not a known read-only assertion (type ${disc ?? 'empty'})`, expected, actual);
+      if (ix.data.length > MAX_LIGHTHOUSE_DATA) refuse('an oversized Lighthouse instruction', expected, actual);
+      if (ix.accounts.length !== 1) refuse('a Lighthouse assertion must target exactly one account', expected, actual);
+      const target = keyAt(ix.accounts[0]!);
+      if (target !== params.owner && target !== params.tokenAccount && target !== params.mint) refuse('a Lighthouse assertion targets an account that is not part of the burn', expected, actual);
       lighthouse++;
     } else {
       refuse(`an instruction from an unexpected program (${program ? short(program) : 'unknown'})`, expected, actual);

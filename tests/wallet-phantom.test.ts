@@ -27,8 +27,9 @@ const u32 = (n: number) => [n & 0xff, (n >> 8) & 0xff, (n >> 16) & 0xff, (n >>> 
 const u64 = (n: bigint) => { const out: number[] = []; for (let i = 0n; i < 8n; i++) out.push(Number((n >> (8n * i)) & 0xffn)); return out; };
 const cbLimit = (n: number): Instruction => ({ programId: COMPUTE_BUDGET_PROGRAM, keys: [], data: Uint8Array.from([2, ...u32(n)]) });
 const cbPrice = (n: bigint): Instruction => ({ programId: COMPUTE_BUDGET_PROGRAM, keys: [], data: Uint8Array.from([3, ...u64(n)]) });
-const lighthouse = (accounts: string[] = [ACCOUNT, MINT], signer = false): Instruction => ({
-  programId: LIGHTHOUSE_PROGRAM, keys: accounts.map((a) => ({ pubkey: a, isSigner: signer && a === accounts[0], isWritable: false })), data: Uint8Array.from([5, 1, 2, 3]),
+/** A Phantom-like Lighthouse read-only assertion on ONE account (type 6 = AssertAccountInfoMulti by default, as seen on Mainnet). */
+const lighthouse = (account: string = ACCOUNT, type = 6, extra: Partial<Instruction> = {}): Instruction => ({
+  programId: LIGHTHOUSE_PROGRAM, keys: [{ pubkey: account, isSigner: account === owner.address, isWritable: false }], data: Uint8Array.from([type, 1, 2, 3]), ...extra,
 });
 
 /** What a wallet does: re-compile the message with its own instruction list (any order), optionally as v0, and sign it. */
@@ -65,7 +66,7 @@ test('[phantom] REPRODUCTION: the former strict byte comparison refuses exactly 
 test('[phantom] Lighthouse + compute budget instructions around our burn are accepted, in any order, and the burn is still read by the engine parser', () => {
   for (const order of [
     [burnIx(), lighthouse()],
-    [lighthouse(), burnIx(), lighthouse([MINT])],
+    [lighthouse(), burnIx(), lighthouse(MINT)],
     [cbLimit(50_000), cbPrice(1_000n), lighthouse(), burnIx()],
     [burnIx(), lighthouse(), lighthouse()],
   ]) {
@@ -74,7 +75,7 @@ test('[phantom] Lighthouse + compute budget instructions around our burn are acc
     assert.equal(r.additions.computeBudget, order.filter((i) => i.programId === COMPUTE_BUDGET_PROGRAM).length);
   }
   // the transaction really parses on the engine side, whatever position the burn ended up at
-  const tx = walletReturns([lighthouse(), cbLimit(30_000), cbPrice(10n), burnIx(), lighthouse([MINT])]);
+  const tx = walletReturns([lighthouse(), cbLimit(30_000), cbPrice(10n), burnIx(), lighthouse(MINT)]);
   const m = parseMessage(splitTransaction(tx).message);
   const parsed = parseBurns({
     slot: 1, blockTime: 1, version: 'legacy',
@@ -125,8 +126,7 @@ test('[phantom] REFUSED: any other program next to the burn (e.g. a SOL transfer
   refused([burnIx(), { programId: randomPubkey(), keys: [], data: Uint8Array.from([1]) }], /unexpected program/);
 });
 
-test('[phantom] REFUSED: a Lighthouse instruction that references the signer, a second required signer, another fee payer, a changed blockhash', () => {
-  refused([burnIx(), lighthouse([owner.address, MINT], true)], /Lighthouse instruction references the signer/);
+test('[phantom] REFUSED: a second required signer, another fee payer, a changed blockhash', () => {
   const other = Keypair.generate();
   refused([burnIx(), { programId: LIGHTHOUSE_PROGRAM, keys: [{ pubkey: other.address, isSigner: true, isWritable: false }], data: Uint8Array.from([1]) }], /more than the owner/);
   refused([burnIx()], /fee payer is not the owner|more than the owner/, { payer: other.address });
@@ -198,7 +198,7 @@ function signedBy(user: Keypair, instructions: Instruction[], blockhash: string,
 }
 
 test('[phantom] full flow: a Phantom-like wallet adds Lighthouse + priority fee, the flow completes, additions are reported, the sent bytes are the wallet\'s', async () => {
-  const f = flow((a) => signedBy(a.user, [cbLimit(40_000), cbPrice(5_000n), burnFor(a), lighthouse([a.tokenAccount, a.mint])], a.blockhash));
+  const f = flow((a) => signedBy(a.user, [cbLimit(40_000), cbPrice(5_000n), burnFor(a), lighthouse(a.tokenAccount)], a.blockhash));
   const p = await ready(f);
   f.rpc.onSend = (b64) => {
     const sig = encodeBase58(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).slice(1, 65));
@@ -220,7 +220,7 @@ test('[phantom] full flow: a Phantom-like wallet adds Lighthouse + priority fee,
 });
 
 test('[phantom] full flow with bytes from another JavaScript realm (in-app browser) and a v0 re-serialization', async () => {
-  const f = flow((a) => signedBy(a.user, [lighthouse([a.tokenAccount, a.mint]), burnFor(a)], a.blockhash, true), { cross: true });
+  const f = flow((a) => signedBy(a.user, [lighthouse(a.tokenAccount), burnFor(a)], a.blockhash, true), { cross: true });
   const p = await ready(f);
   await f.c.confirm(p.id);
   const s = f.c.getState();
@@ -248,4 +248,50 @@ test('[phantom] full flow: a wallet that adds a SOL transfer is refused with the
   assert.equal(f.c.getState().error?.code, 'signed_message_mismatch');
   assert.match(f.c.getState().error?.detail ?? '', /unexpected program \(111111…1111\)/);
   assert.equal(f.rpc.sent.length, 0);
+});
+
+/* ------------- REGRESSION (Mainnet, iPhone Phantom): "a Lighthouse instruction references the signer account" ------------- */
+
+test('[phantom][REGRESSION] Phantom Mainnet shape: legacy -> legacy, ComputeBudget + Lighthouse assertions on the signer\'s own account around a Token-2022 burn is ACCEPTED', () => {
+  const t22 = { tokenProgram: 'token-2022' as const };
+  const burn22 = ix.burnChecked(TOKEN_PROGRAMS['token-2022'], ACCOUNT, MINT, owner.address, 1_000_000n, 6);
+  const tx = walletReturns([cbLimit(40_000), cbPrice(1_000n), lighthouse(owner.address, 6), burn22, lighthouse(owner.address, 6)]);
+  const r = verifySignedTransaction(tx, unsigned(t22));
+  assert.equal(r.additions.lighthouse, 2);
+  assert.equal(r.additions.computeBudget, 2);
+  assert.equal(r.additions.version, 'legacy');
+  // the engine parser still reads exactly that burn from the returned message
+  const m = parseMessage(splitTransaction(tx).message);
+  assert.equal(m.keys[0], owner.address);
+  assert.equal(m.numRequiredSignatures, 1);
+});
+
+test('[phantom] every allowed assertion type is accepted on each of the burn\'s own accounts; anything else is refused', () => {
+  for (const type of [5, 6, 9, 10]) for (const acc of [owner.address, ACCOUNT, MINT]) accepted([lighthouse(acc, type), burnIx()]);
+  // MemoryWrite (0) / MemoryClose (1) move lamports from the payer; the other assertion kinds and unknown numbers are not on the list
+  for (const type of [0, 1, 2, 3, 4, 7, 8, 11, 14, 17, 255]) refused([lighthouse(owner.address, type), burnIx()], /not a known read-only assertion/);
+  refused([{ programId: LIGHTHOUSE_PROGRAM, keys: [], data: new Uint8Array() }, burnIx()], /not a known read-only assertion \(type empty\)/);
+});
+
+test('[phantom][malicious] a Lighthouse instruction may not carry extra accounts, foreign accounts, a second signer or oversized data', () => {
+  const two: Instruction = { programId: LIGHTHOUSE_PROGRAM, keys: [{ pubkey: owner.address, isSigner: true, isWritable: false }, { pubkey: MINT, isSigner: false, isWritable: false }], data: Uint8Array.from([6]) };
+  refused([burnIx(), two], /exactly one account/);
+  refused([burnIx(), { ...two, keys: [] }], /exactly one account/);
+  refused([burnIx(), lighthouse(randomPubkey())], /not part of the burn/);
+  const attacker = Keypair.generate();
+  refused([burnIx(), { programId: LIGHTHOUSE_PROGRAM, keys: [{ pubkey: attacker.address, isSigner: true, isWritable: false }], data: Uint8Array.from([6]) }], /more than the owner|not part of the burn/);
+  refused([burnIx(), lighthouse(owner.address, 6, { data: Uint8Array.from([6, ...new Uint8Array(600)]) })], /oversized/);
+});
+
+test('[phantom][malicious] smuggled instructions next to Phantom-like additions are still refused: transfer, second/bigger burn, approve/set-authority, system transfer, unknown program', () => {
+  const sys = '11111111111111111111111111111111';
+  const wrap = (bad: Instruction) => [cbLimit(40_000), lighthouse(owner.address, 6), burnIx(), bad, lighthouse(owner.address, 6)];
+  const tokenData = (b: number[]): Instruction => ({ programId: TOKEN_PROGRAMS['spl-token'], keys: [{ pubkey: ACCOUNT, isSigner: false, isWritable: true }, { pubkey: randomPubkey(), isSigner: false, isWritable: true }, { pubkey: owner.address, isSigner: true, isWritable: false }], data: Uint8Array.from(b) });
+  refused(wrap(tokenData([3, ...u64(1_000_000_000n)])), /token instruction differs/); // Transfer
+  refused(wrap(tokenData([4, ...u64(1_000_000_000n)])), /token instruction differs/); // Approve (delegate)
+  refused(wrap(tokenData([6, 2, 0])), /token instruction differs/); // SetAuthority
+  refused(wrap(burnIx({ amount: 1_000_001n })), /token instruction differs/);
+  refused(wrap(burnIx()), /more than once/);
+  refused(wrap({ programId: sys, keys: [{ pubkey: owner.address, isSigner: true, isWritable: true }, { pubkey: randomPubkey(), isSigner: false, isWritable: true }], data: Uint8Array.from([2, 0, 0, 0, ...u64(1n)]) }), /unexpected program/);
+  refused(wrap({ programId: randomPubkey(), keys: [{ pubkey: owner.address, isSigner: true, isWritable: true }], data: Uint8Array.from([1]) }), /unexpected program/);
 });
