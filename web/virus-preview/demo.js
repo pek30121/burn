@@ -88,6 +88,11 @@
   }
 
   window.__DEMO__ = true;
+  // the preview is never "LIVE": every engine status badge / boot line / description says DEMO (production code is not touched)
+  if (window.VX && window.VX.store && typeof window.VX.store.setSource === 'function') {
+    const setSource = window.VX.store.setSource;
+    window.VX.store.setSource = (src) => setSource(src && src.id === 'engine' && /^LIVE/.test(src.label) ? Object.assign({}, src, { label: 'DEMO', description: 'DEMO: simulated data, no token, no real burn.' }) : src);
+  }
   // simulated transactions do not exist on any explorer: never link them to one
   if (window.VX) {
     if (window.VX.project) window.VX.project.explorerTxUrl = '#demo-simulated-transaction-{tx}';
