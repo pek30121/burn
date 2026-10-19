@@ -25,7 +25,7 @@ const havePlaywright = existsSync(PW) && existsSync('/opt/pw-browsers');
 const opts = { skip: havePlaywright ? false : 'Playwright / Chromium not available' };
 
 const STAGE_IDS = ['dormant', 'seed', 'bug', 'parasite', 'worm', 'overmind', 'god'];
-const THRESHOLDS = ['0', '1000000', '5000000', '15000000', '40000000', '100000000', '250000000'];
+const THRESHOLDS = ['0', '10000', '50000', '150000', '400000', '1000000', '2500000'];
 const MINT = randomPubkey(); // a throw-away fixture: this is NOT the VIRUS token (which does not exist yet)
 const TOKEN_ACCOUNT = randomPubkey();
 const virusCfg = parseProjectConfig(projectInput({
@@ -275,8 +275,22 @@ test('[virus-site][chromium] wallet refusal, failed simulation, and a Phantom-li
 test('[virus-site][chromium] iPhone and desktop layout: no horizontal overflow, 7 sprites untouched, the site is served from /virus/ and "/" is still the test page', opts, async () => {
   const s = await bootSite({ withProject: true });
   try {
+    // a visitor arrives after several mutations: 160,000 tokens burned and finalized (Parasite: 150K .. 400K)
+    s.source.addBurn('virus', 60_000_000_000n); s.source.addMutation('virus', 'seed', 1); s.source.addMutation('virus', 'bug', 2);
+    s.source.addBurn('virus', 100_000_000_000n); s.source.addMutation('virus', 'parasite', 3);
     await s.page.goto(`${s.base}/virus/`);
     await s.page.waitForFunction(() => (window as any).VX?.store?.state?.hasData === true, null, { timeout: 20_000 });
+    const dom = await s.page.evaluate(() => ({
+      stage: document.querySelector('[data-bind="stageName"]')?.textContent, toNext: document.querySelector('[data-bind="toNext"]')?.textContent,
+      progress: document.querySelector('[data-bar="stage"]')?.style.getPropertyValue('--p'), infection: document.querySelector('[data-bar="infection"]')?.style.getPropertyValue('--p'),
+      burned: document.querySelector('[data-bind="burned"]')?.textContent, stageIndex: (window as any).VX.store.state.stageIndex,
+    }));
+    assert.equal(dom.stageIndex, 3);
+    assert.equal(dom.stage, 'Parasite Form', 'right form immediately, no replayed mutation');
+    assert.equal(dom.toNext, '240K $VIRUS to Worm Form');
+    assert.equal(Number(dom.progress), 4, '(160K-150K)/(400K-150K)');
+    assert.equal(Number(dom.infection), 50.67, '(3 + 0.04) / 6');
+    assert.equal(dom.burned, '160,000');
     if (process.env.VIRUS_SHOTS_DIR) await s.page.screenshot({ path: `${process.env.VIRUS_SHOTS_DIR}/home-iphone.png` });
     for (const [w, h] of [[390, 844], [1280, 800]] as const) {
       await s.page.setViewportSize({ width: w, height: h });

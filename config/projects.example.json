@@ -11,12 +11,12 @@
       "startSlot": 0,
       "levels": [
         { "id": "dormant", "name": "Dormant File", "threshold": "0" },
-        { "id": "seed", "name": "Glitch Seed", "threshold": "1000000" },
-        { "id": "bug", "name": "Bug Form", "threshold": "5000000" },
-        { "id": "parasite", "name": "Parasite Form", "threshold": "15000000" },
-        { "id": "worm", "name": "Worm Form", "threshold": "40000000" },
-        { "id": "overmind", "name": "Overmind", "threshold": "100000000" },
-        { "id": "god", "name": "System God", "threshold": "250000000" }
+        { "id": "seed", "name": "Glitch Seed", "threshold": "10000" },
+        { "id": "bug", "name": "Bug Form", "threshold": "50000" },
+        { "id": "parasite", "name": "Parasite Form", "threshold": "150000" },
+        { "id": "worm", "name": "Worm Form", "threshold": "400000" },
+        { "id": "overmind", "name": "Overmind", "threshold": "1000000" },
+        { "id": "god", "name": "System God", "threshold": "2500000" }
       ]
     }
   ]

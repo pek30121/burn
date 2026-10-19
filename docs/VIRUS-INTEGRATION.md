@@ -28,7 +28,7 @@ Served from the **same origin** as `/rpc` and `/api/v1` by the Replit web server
 ## Procedure once the token exists (not executed)
 1. Create the token (Pump.fun). Mint authority must be revoked (default there); note the mint.
 2. Read-only check, from a shell with `HELIUS_API_KEY`: `npm run mainnet:onboard -- <MINT> virus VIRUS.EXE VIRUS`. It prints the token program, decimals, `initialSupply` and refuses when the supply proof cannot apply.
-3. Add the printed entry to `deploy/projects.mainnet.json` with the **7 levels**, ids exactly `dormant, seed, bug, parasite, worm, overmind, god`, thresholds in whole tokens (site defaults: `0, 1000000, 5000000, 15000000, 40000000, 100000000, 250000000`; decide them now: a level that has fired can never be removed).
+3. Add the printed entry to `deploy/projects.mainnet.json` with the **7 levels**, ids exactly `dormant, seed, bug, parasite, worm, overmind, god`, thresholds in whole tokens: `0, 10000, 50000, 150000, 400000, 1000000, 2500000` (the site defaults in `js/config.js`; 0 / 0.001 % / 0.005 % / 0.015 % / 0.04 % / 0.1 % / 0.25 % of a 1,000,000,000 reference supply). A level that has fired can never be removed, so they are final once the engine has started with them.
 4. In `web/virus/js/project.js` set `mint` (cross-check); in `web/virus/js/config.js` set `token.contract` and the BUY / CHART URLs.
 5. Run the tests, merge, then on Replit: **Pull**, then **Republish** (the supervisor serves `/virus/` with the engine; nothing else to configure: same `HELIUS_API_KEY`, `DATABASE_URL`). The restart is what makes the engine read the new project.
 6. Verify: `GET /api/v1/projects/virus/status` shows `data.state: synced`; the site label turns `LIVE`; then the first small real burn test (needs your explicit go).
@@ -44,3 +44,19 @@ Hosting the site elsewhere later (e.g. Netlify) is possible for the counters (`e
 * Not tested with a real Phantom, WebKit/Safari (only Chromium), or on a real iPhone. No real token, so no end-to-end Mainnet burn.
 * The bridge's `LIVE (UNVERIFIED)` state exists for projects whose supply proof cannot complete; the supply proof for a new Pump.fun token needs `initialSupply` (given by `mainnet:onboard`).
 * Site texts are English; the wallet error messages are overridden in English in `burn-ui.js`.
+
+## Thresholds (small community project)
+| # | id | Site name | Cumulative finalized burn | % of 1B |
+|---|---|---|---|---|
+| 1 | `dormant` | Dormant File | 0 | 0 |
+| 2 | `seed` | Glitch Seed | 10,000 | 0.001 % |
+| 3 | `bug` | Bug Form | 50,000 | 0.005 % |
+| 4 | `parasite` | Parasite Form | 150,000 | 0.015 % |
+| 5 | `worm` | Worm Form | 400,000 | 0.04 % |
+| 6 | `overmind` | Overmind | 1,000,000 | 0.1 % |
+| 7 | `god` | System God | 2,500,000 | 0.25 % |
+
+* Where they live: `web/virus/js/config.js` (visual copy, replaced at connection by the engine's values), `config/projects.example.json` (example entry), and, **at onboarding**, `deploy/projects.mainnet.json` (the engine's configuration, the source of truth). The engine code contains no VIRUS-specific threshold. FLAPY's entry is untouched.
+* They depend only on the cumulative amount **burned and finalized** (engine total); never on market cap, price or visitors.
+* Names shown on the site were kept (`Glitch Seed`, `Bug Form`, ...): only ids and thresholds are contractual.
+* **Reference supply 1,000,000,000 (to confirm at creation).** Consistent with every Pump.fun mint measured on Mainnet during this project: exactly 10^15 raw units = 10^9 tokens with 6 decimals, mint authority revoked (FLAPY and the four audited tokens, see `docs/MAINNET.md`). It is a measurement, not a guarantee for the future VIRUS mint: `npm run mainnet:onboard` reads the real supply and decimals and prints `initialSupply`; if it differs from 1,000,000,000 the percentages above no longer hold and the thresholds must be re-decided (not silently changed). Tokens held in the bonding curve / pool are not burnable by holders, so the share of the supply actually in holders' hands is lower; the absolute thresholds stay small relative to it.

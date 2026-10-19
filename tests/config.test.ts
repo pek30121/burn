@@ -61,7 +61,8 @@ test('registry loads the example file', async () => {
   const reg = await ProjectRegistry.fromFile(new URL('../config/projects.example.json', import.meta.url).pathname);
   const virus = reg.require('virus');
   assert.equal(virus.levels.length, 7);
-  assert.equal(virus.levels[6]!.thresholdRaw, 250_000_000_000_000n);
+  assert.deepEqual(virus.levels.map((l) => l.id), ['dormant', 'seed', 'bug', 'parasite', 'worm', 'overmind', 'god']);
+  assert.deepEqual(virus.levels.map((l) => l.thresholdRaw), [0n, 10_000n, 50_000n, 150_000n, 400_000n, 1_000_000n, 2_500_000n].map((t) => t * 1_000_000n));
 });
 
 test('initialSupply is optional, converted exactly, and validated', () => {
