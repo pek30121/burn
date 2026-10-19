@@ -24,6 +24,9 @@ export function publicProject(p: ProjectConfig) {
   };
 }
 
+/** A project still waiting for its token (or blocked): only the stable lifecycle and public code, nothing internal. */
+export interface PublicPending { id: string; name: string; ticker: string; cluster: string; mint: string; lifecycle: string; code: string | null }
+
 export function publicBurn(p: ProjectConfig, b: StoredBurn) {
   return {
     signature: b.signature, instructionPath: b.instructionPath, slot: b.slot, blockTime: b.blockTime, owner: b.owner,

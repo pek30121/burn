@@ -2,6 +2,7 @@
  * a raw HTTP requester, a tiny SSE client, and a ready-made API server factory. */
 import { request as httpRequest } from 'node:http';
 import { StoreError } from '../src/db/errors.ts';
+import type { PublicPending } from '../src/api/serialize.ts';
 import { createApiServer, type ApiConfig, type ApiRuntime, type ApiServer } from '../src/api/http.ts';
 import type { ApiSource, ReachedLevel, StoredBurnRow, StoredEvent } from '../src/api/types.ts';
 import { emptyState, type IndexState, type Totals } from '../src/indexer/store.ts';
@@ -116,13 +117,13 @@ export interface TestApi {
   close(): Promise<void>;
 }
 
-export async function startTestApi(source: ApiSource, o: { projects?: readonly ProjectConfig[]; config?: Partial<ApiConfig> } = {}): Promise<TestApi> {
+export async function startTestApi(source: ApiSource, o: { projects?: readonly ProjectConfig[]; pending?: () => readonly PublicPending[]; config?: Partial<ApiConfig> } = {}): Promise<TestApi> {
   const projects = o.projects ?? [alphaCfg, betaCfg];
   const runtime = { state: 'running' as 'running' | 'stopping' | 'stopped', runners: Object.fromEntries(projects.map((p) => [p.id, healthyRunner() as RunnerSnapshot | null])) };
   const clock = { t: 1_000_000 };
   const logs: any[] = [];
   const rt: ApiRuntime = { engineState: () => runtime.state, runner: (id) => runtime.runners[id] ?? null };
-  const api = createApiServer({ source, projects, runtime: rt, config: apiConfig(o.config), log: createLogger({ level: 'debug', write: (l) => logs.push(JSON.parse(l)) }), now: () => clock.t });
+  const api = createApiServer({ source, projects, ...(o.pending ? { pending: o.pending } : {}), runtime: rt, config: apiConfig(o.config), log: createLogger({ level: 'debug', write: (l) => logs.push(JSON.parse(l)) }), now: () => clock.t });
   const port = await api.listen();
   return { api, url: `http://127.0.0.1:${port}`, runtime, clock, logs, close: () => api.close() };
 }

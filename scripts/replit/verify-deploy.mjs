@@ -1,7 +1,7 @@
 /* Post-deploy verification of a running stack (production or preview), over HTTP only. Plain Node, no dependency.
  *
- *   node scripts/replit/verify-deploy.mjs https://<app>.replit.app --network mainnet-beta --project flapy [--commit <sha>] [--site-files web/virus]
- *   npm run verify:deploy -- https://<app>.replit.app --network mainnet-beta --project flapy --commit $(git rev-parse HEAD)
+ *   node scripts/replit/verify-deploy.mjs https://<app>.replit.app --network mainnet-beta --project <id> [--pending virus] [--commit <sha>] [--site-files web/virus]
+ *   npm run verify:deploy -- https://<app>.replit.app --network mainnet-beta --pending virus --commit $(git rev-parse HEAD)
  *
  * It sends no transaction and changes nothing: GET requests, one allow-listed read-only RPC call (getGenesisHash, ~1 credit), and two
  * deliberate POSTs that MUST be refused (read-only API, RPC allowlist). Exit code 0 only if every check passes.
@@ -61,7 +61,18 @@ export async function verifyDeploy(base, o = {}) {
     check(`project "${id}" is synced`, st?.data?.state === 'synced', `state ${st?.data?.state}, level ${st?.progression?.level?.id}, history ${st?.data?.history?.verification}, burns ${st?.totals?.burnCount}`);
     check(`project "${id}" status carries finalized burnCount`, typeof st?.totals?.burnCount === 'number');
   }
-  if (!(o.projects ?? []).includes('virus')) {
+  // a project that waits for its token (pre-launch): healthy when the engine lists it as waiting (or already synced); never when blocked or unknown
+  for (const id of o.pending ?? []) {
+    const active = projects.find((x) => x.id === id);
+    if (active) {
+      const st = json(await get(`/api/v1/projects/${encodeURIComponent(id)}/status`));
+      check(`pending project "${id}" is already active and synced`, st?.data?.state === 'synced', `state ${st?.data?.state}`);
+      continue;
+    }
+    const w = (list?.pending ?? []).find((x) => x.id === id);
+    check(`pending project "${id}" is known to the engine and waiting for its mint`, !!w && w.lifecycle !== 'blocked', w ? `${w.lifecycle}${w.code ? ` (${w.code})` : ''}` : 'missing');
+  }
+  if (!(o.projects ?? []).includes('virus') && !(o.pending ?? []).includes('virus')) {
     const v = await get('/api/v1/projects/virus/status');
     check('no "virus" project exists yet (token not launched) or it is synced', v.status === 404 || json(v)?.data?.state === 'synced', `status ${v.status}`);
   }
@@ -92,8 +103,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const opt = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
   const all = (name) => args.flatMap((a, i) => (a === name ? [args[i + 1]] : []));
   const base = args.find((a) => /^https?:\/\//.test(a));
-  if (!base) { console.error('usage: verify-deploy.mjs <https://app> [--network mainnet-beta|devnet] [--project id ...] [--commit sha] [--site-files web/virus]'); process.exit(2); }
-  const { ok, results } = await verifyDeploy(base, { network: opt('--network'), projects: all('--project'), commit: opt('--commit'), siteFiles: opt('--site-files') });
+  if (!base) { console.error('usage: verify-deploy.mjs <https://app> [--network mainnet-beta|devnet] [--project id ...] [--pending id ...] [--commit sha] [--site-files web/virus]'); process.exit(2); }
+  const { ok, results } = await verifyDeploy(base, { network: opt('--network'), projects: all('--project'), pending: all('--pending'), commit: opt('--commit'), siteFiles: opt('--site-files') });
   for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.detail && !r.ok ? `  — ${r.detail}` : r.detail ? `  (${r.detail})` : ''}`);
   console.log(ok ? '\nALL CHECKS PASSED' : '\nSOME CHECKS FAILED — do not consider this deployment verified');
   process.exit(ok ? 0 : 1);

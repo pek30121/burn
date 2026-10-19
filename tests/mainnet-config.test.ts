@@ -2,17 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ProjectRegistry } from '../src/config/registry.ts';
 
-test('[mainnet-config] deploy/projects.mainnet.json loads through the real registry (FLAPY, Token-2022, proof-ready, Mainnet only)', async () => {
+test('[mainnet-config] deploy/projects.mainnet.json loads through the real registry: VIRUS only, pending until its mint exists, Mainnet only, counted from creation', async () => {
   const reg = await ProjectRegistry.fromFile('deploy/projects.mainnet.json');
-  const all = reg.list();
-  assert.ok(all.length >= 1);
-  for (const p of all) {
-    assert.equal(p.cluster, 'mainnet-beta');
-    assert.equal(p.startSlot, 0);
-  }
-  const f = all.find((p) => p.id === 'flapy')!;
-  assert.equal(f.mint, 'GB5RZm2EgoY6MAdepyZaGhqewhP4tmutt5vYdeCLpump');
-  assert.equal(f.tokenProgram, 'token-2022');
-  assert.equal(f.decimals, 6);
-  assert.equal(f.initialSupplyRaw, 1_000_000_000_000_000n);
+  assert.deepEqual(reg.list(), [], 'no project is active before its mint exists on-chain');
+  const pending = reg.pending();
+  assert.deepEqual(pending.map((p) => p.id), ['virus']);
+  const v = pending[0]!;
+  assert.equal(v.cluster, 'mainnet-beta');
+  assert.equal(v.startSlot, 0);
+  assert.equal(v.mint, 'EuhDQM4c9TsyytKDDj5PkAxoL2n9zUh9bcE8tdDkpump');
 });

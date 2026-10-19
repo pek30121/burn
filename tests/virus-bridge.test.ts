@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { test } from 'node:test';
 import { parseProjectConfig } from '../src/config/schema.ts';
-import { MemoryApiSource, startTestApi, type TestApi } from './api-helpers.ts';
+import { healthyRunner, MemoryApiSource, startTestApi, type TestApi } from './api-helpers.ts';
 import { MINT_A, MINT_B, projectInput } from './helpers.ts';
 
 const SITE = new URL('../web/virus/js/', import.meta.url);
@@ -275,6 +275,55 @@ test('[virus-bridge] no token yet: the engine does not know the project -> "NO T
     assert.equal(h.vx.store.state.hasData, false);
     assert.equal(h.vx.engineMeta, undefined, 'nothing the burn window could use');
   } finally { await h.stop(); }
+});
+
+test('[virus-bridge][pre-launch] the engine waits for the mint: NO TOKEN YET says so; it ACTIVATES, then the site goes INDEXING -> LIVE by itself, with no reload and no redeploy', async () => {
+  const source = new MemoryApiSource(['virus']);
+  const active: any[] = [];
+  const pending = { v: [{ id: 'virus', name: 'VIRUS.EXE', ticker: 'VIRUS', cluster: 'devnet', mint: MINT_B, lifecycle: 'awaiting_mint', code: null as string | null }] as any[] };
+  const api = await startTestApi(source, { projects: active, pending: () => pending.v });
+  const h = await attach(api, source, { project_cfg: { mint: MINT_B } });
+  try {
+    await h.wait(() => lastLabel(h) === 'NO TOKEN YET', 'waiting label');
+    assert.match(h.sources.at(-1)!.description, /watching for it and starts by itself/);
+    assert.equal(h.snapshots.length, 0);
+    assert.equal(h.errors.length, 0);
+    pending.v[0].lifecycle = 'activating';
+    await h.wait(() => lastLabel(h) === 'ACTIVATING', 'activating label');
+    // the engine activated the project (appended to the live list) and the first burns are indexed
+    source.addBurn('virus', T(12_000));
+    source.addMutation('virus', 'seed', 1);
+    active.push(parseProjectConfig(virusInput()));
+    pending.v = [];
+    api.runtime.runners.virus = healthyRunner();
+    await h.wait(() => h.snapshots.length === 1, 'first snapshot after the activation');
+    assert.equal(h.snapshots[0].totalBurned, 12_000);
+    assert.equal(h.snapshots[0].stageIndex, 1);
+    assert.match(lastLabel(h)!, /^LIVE/);
+    assert.equal(h.errors.length, 0);
+  } finally { await h.stop(); }
+});
+
+test('[virus-bridge][pre-launch] a token the engine refuses: TOKEN BLOCKED with a plain reason and ONE error, no figures; a different waiting mint is refused', async () => {
+  const source = new MemoryApiSource(['virus']);
+  const api = await startTestApi(source, { projects: [], pending: () => [{ id: 'virus', name: 'VIRUS.EXE', ticker: 'VIRUS', cluster: 'devnet', mint: MINT_B, lifecycle: 'blocked', code: 'mint_authority_active' }] });
+  const h = await attach(api, source, { project_cfg: { mint: MINT_B } });
+  try {
+    await h.wait(() => lastLabel(h) === 'TOKEN BLOCKED', 'blocked label');
+    assert.match(h.sources.at(-1)!.description, /mint authority is still active/);
+    await h.wait(() => h.errors.length === 1, 'one explicit error');
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(h.errors.length, 1, 'reported once, not on every retry');
+    assert.equal(h.snapshots.length, 0);
+    assert.equal(h.vx.store.state.hasData, false);
+  } finally { await h.stop(); }
+  const s2 = new MemoryApiSource(['virus']);
+  const a2 = await startTestApi(s2, { projects: [], pending: () => [{ id: 'virus', name: 'VIRUS.EXE', ticker: 'VIRUS', cluster: 'devnet', mint: MINT_A, lifecycle: 'awaiting_mint', code: null }] });
+  const h2 = await attach(a2, s2, { project_cfg: { mint: MINT_B } });
+  try {
+    await h2.wait(() => h2.errors.length === 1, 'mint mismatch error');
+    assert.equal(lastLabel(h2), 'MISMATCH');
+  } finally { await h2.stop(); }
 });
 
 test('[virus-bridge] levels that do not match the 7 forms, or another mint than configured, are refused (never READY, explicit error)', async () => {

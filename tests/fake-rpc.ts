@@ -20,6 +20,8 @@ export interface RpcHooks {
   genesis?: string;
   /** Owner program answered by getAccountInfo, per address (null = the account does not exist). Default: the SPL Token program. */
   owners?: Record<string, string | null>;
+  /** Addresses that exist at `confirmed` but are not visible at `finalized` yet (the node has not finalized their creation). */
+  notFinalized?: Set<string>;
 }
 
 export const newHooks = (): RpcHooks => ({ requests: [] });
@@ -38,7 +40,7 @@ export async function handleRpc(chain: FakeChain, hooks: RpcHooks, raw: string):
         return ok(hooks.genesis ?? 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG');
       case 'getAccountInfo': {
         const owner = hooks.owners && req.params[0] in hooks.owners ? hooks.owners[req.params[0]] : 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
-        if (owner === null) return ok({ context: { slot: chain.finalizedSlot }, value: null });
+        if (owner === null || (hooks.notFinalized?.has(req.params[0]) && req.params[1]?.commitment === 'finalized')) return ok({ context: { slot: chain.finalizedSlot }, value: null });
         // Full account data (the supply proof reads the mint): an 82-byte Token mint with a revoked authority; owner-only reads get no data.
         const full = !req.params[1]?.dataSlice;
         const mint = new Uint8Array(82);

@@ -1,4 +1,4 @@
-# Replit, MAINNET (FLAPY): the burn engine alone serves the read-only public API on the public port (supervisor mainnetSpecs).
+# Replit, MAINNET (VIRUS.EXE, pending its mint: the engine activates it by itself): the burn engine alone serves the read-only public API on the public port (supervisor mainnetSpecs).
 # The network is ALSO pinned in the run commands below, so it does not depend on how Replit passes [env] to a deployment.
 # ROLLBACK TO DEVNET: replace the three values (DEPLOY_NETWORK=devnet, SOLANA_CLUSTER=devnet, PROJECTS_CONFIG=deploy/projects.devnet.json)
 # in [env] and in both run commands. See deploy/README.md and docs/MAINNET-LAUNCH.md.

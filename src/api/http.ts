@@ -11,7 +11,7 @@ import { formatUiAmount } from '../core/amount.ts';
 import { jsonSafe, type Logger } from '../engine/logger.ts';
 import type { RunnerSnapshot } from '../engine/runner.ts';
 import { Gate, OverloadedError, RateLimiter, TtlCache } from './limits.ts';
-import { dataState, publicBurn, publicEvent, publicProgression, publicProject } from './serialize.ts';
+import { dataState, publicBurn, publicEvent, publicProgression, publicProject, type PublicPending } from './serialize.ts';
 import { SseManager, type SseConfig } from './sse.ts';
 import type { ApiSource } from './types.ts';
 
@@ -35,7 +35,10 @@ export interface ApiRuntime {
 
 export interface ApiDeps {
   readonly source: ApiSource;
+  /** Read on every request: the engine appends a project here when it activates it (no restart). */
   readonly projects: readonly ProjectConfig[];
+  /** Projects waiting for their mint (or blocked): listed by `/api/v1/projects` under `pending`, never served any data. */
+  readonly pending?: () => readonly PublicPending[];
   readonly runtime: ApiRuntime;
   readonly config: ApiConfig;
   readonly log: Logger;
@@ -69,7 +72,7 @@ const ROUTE = /^\/api\/v1\/projects\/([^/]+)\/(status|burns|progression|events|s
 export function createApiServer(deps: ApiDeps): ApiServer {
   const { source, config: cfg, log, runtime } = deps;
   const now = deps.now ?? Date.now;
-  const byId = new Map(deps.projects.map((p) => [p.id, p]));
+  const findProject = (id: string): ProjectConfig | undefined => deps.projects.find((p) => p.id === id);
   const gate = new Gate(cfg.dbConcurrency, cfg.dbQueue);
   const limiter = new RateLimiter({ limit: cfg.rateLimitPerMinute, windowMs: 60_000, now });
   const cache = new TtlCache<unknown>(now);
@@ -179,12 +182,13 @@ export function createApiServer(deps: ApiDeps): ApiServer {
     if (path === '/health/ready') return ready(req, res);
     if (path === '/api/v1/projects') {
       strictQuery(url, []);
-      return sendJson(req, res, 200, { data: deps.projects.map(publicProject) });
+      const pending = deps.pending?.() ?? [];
+      return sendJson(req, res, 200, { data: deps.projects.map(publicProject), ...(pending.length ? { pending } : {}) });
     }
     const m = ROUTE.exec(path);
     if (!m) throw new ApiError(404, 'not_found', 'Unknown route.');
     const id = m[1]!;
-    const project = ID.test(id) ? byId.get(id) : undefined;
+    const project = ID.test(id) ? findProject(id) : undefined;
     if (!project) throw new ApiError(404, 'project_not_found', 'Unknown project.');
     switch (m[2]) {
       case 'status': return status(req, res, url, project);

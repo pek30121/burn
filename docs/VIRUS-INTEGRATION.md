@@ -1,6 +1,6 @@
 # VIRUS.EXE × universal burn engine (branch `virus-integration`)
 
-**State: integrated and tested with mocks. The VIRUS token does not exist yet: nothing here is announced as working on Mainnet.**
+**State: integrated and tested with mocks and simulated chains. The VIRUS token does not exist yet: nothing here is announced as working on Mainnet.**
 Nothing has been published, pushed to `main`, or sent to the chain from this work.
 
 ## What was added
@@ -25,19 +25,28 @@ Served from the **same origin** as `/rpc` and `/api/v1` by the Replit web server
 * **Reconnection**: SSE resumes from the last event id (`?after=`); duplicates are ignored; a gap or a `reset` event triggers a full re-read; 45 s of silence reopens the stream.
 * **BURN window** (free amount): connect wallet → on-chain mint / program / decimals / balance → amount (any positive amount ≤ available balance; MAX = exactly the balance in raw units; 0, negative, NaN, `1e3`, too many decimals, > balance refused) → PREVIEW (simulation, fee, recap, "permanent" notice) → explicit tick → the wallet asks for the signature → the signed message is checked against the preview (Phantom's ComputeBudget + Lighthouse assertions accepted, D35) → sent → explorer link. Never automatic. No wallet: message + Phantom deep link (`phantom.app/ul/browse/…`, **to be validated on a real iPhone**).
 
-## Planned mint and launch procedure (nothing below has been executed)
-Planned CA (prepared on Pump.fun, **no first buy yet**): `EuhDQM4c9TsyytKDDj5PkAxoL2n9zUh9bcE8tdDkpump`. Checked read-only on Mainnet: valid base58 / 32 bytes / `pump` suffix; **no account at `finalized` nor `confirmed`** (the token does not exist on-chain yet). Decimals, token program and supply are **not assumed anywhere**: `deploy/virus.prelaunch.json` (not read by the engine) holds only id, name, ticker, mint and the 7 levels; the rest is read from the chain.
+## Automatic activation (D41): deploy BEFORE the launch, nothing to do after the first buy
+FLAPY was only a test token and is gone from the configuration: `deploy/projects.mainnet.json` holds **VIRUS only**, declared `"awaitMint": true`.
 
-**Why the order matters.** The engine refuses to start (for *every* project, FLAPY included) when a configured mint does not exist at `finalized` (H2, `mint-check.ts`). So the `virus` entry must **not** be added to `deploy/projects.mainnet.json` before the mint exists and is finalized. Until then the site stays on `NO TOKEN YET` (the engine has no project `virus`; `project.js` only holds the expected mint as a cross-check).
+Planned CA (prepared on Pump.fun, no first buy yet): `EuhDQM4c9TsyytKDDj5PkAxoL2n9zUh9bcE8tdDkpump`. Checked read-only on Mainnet: valid base58 / 32 bytes / `pump` suffix; **no account at `finalized` nor `confirmed` yet**.
 
-1. **Before the first buy** (any time, read-only): `npm run virus:prelaunch`. Exit 3 = not created / not finalized yet (expected now): stop. Re-run after the creation.
-2. **After the first buy / creation** and once finalized: `npm run virus:prelaunch` again. It reads the real token program, decimals, supply, mint and freeze authority, extensions; **blocks** on an active mint authority, `ConfidentialMintBurn`, wrapped SOL; **warns** on a freeze authority, extensions, and any difference from the reference (6 decimals, 10^9 tokens) because the level percentages then no longer hold (re-decide the thresholds, never change them silently). If clean it runs `mainnet:onboard` to derive `initialSupply` (checked against the mint history: supply = created − burned) and prints the entry.
-3. Add that entry to `deploy/projects.mainnet.json` with the 7 levels of `deploy/virus.prelaunch.json` (ids `dormant, seed, bug, parasite, worm, overmind, god`; a level that has fired can never be removed). **FLAPY's entry stays untouched.**
-4. `web/virus/js/config.js`: `token.contract` and the BUY / CHART URLs (still `null`, "Coming soon"). `project.js` already holds the mint.
-5. `npm run check` (with `TEST_DATABASE_URL`), then your explicit go to push / merge. On Replit: **Pull**, then **Republish** (same `HELIUS_API_KEY`, `DATABASE_URL`); the restart is what makes the engine read the new project. Do it when the mint is already finalized, never before.
-6. Verify: `/build-info` (verify-deploy), `GET /api/v1/projects/virus/status` → `data.state: synced`, then the label turns `LIVE`; FLAPY's status unchanged. First small real burn only with your explicit go.
-7. **Rollback**: remove the `virus` entry from `deploy/projects.mainnet.json`, Pull + Republish; the site returns to `NO TOKEN YET`. Stored `virus` rows stay in PostgreSQL (keyed by `project_id`, FLAPY unaffected).
-8. Publish the CA (X, site, Pump.fun fields) **last**, copied from Pump.fun, after step 6.
+**What the engine does by itself** (`src/engine/activation.ts`, one `MintWatcher` per pending project, isolated from every other project):
+1. **Waiting**: one cheap `getAccountInfo` (finalized) every `PENDING_POLL_INTERVAL_MS` (default 15 s ≈ 170k credits/month while the token does not exist; local estimate, not billing). RPC failures back off (`ERROR_BACKOFF_*`) and are never a verdict. A mint seen only at `confirmed` is not a mint yet. The engine starts, serves its API and `/health/ready` normally with nothing active.
+2. **Validation, as soon as the mint is finalized**, all read from the chain, nothing assumed: owner = Token or Token-2022 program (else `not_a_token_mint`); mint authority revoked (`mint_authority_active`); no freeze authority (`freeze_authority_active`); no Token-2022 confidential mint/burn or unknown extension (`unsupported_mint_extension`); not wrapped SOL; supply > 0; decimals within range. The mint's own finalized history is read (bounded by `PENDING_MAX_HISTORY_SIGNATURES`, default 1500) to derive the creation supply (MintTo) and to check that `supply = created − burned` holds exactly (`supply_history_mismatch`). A history longer than the bound is never guessed: the project is still activated, without `initialSupply` (`initial_supply_unknown`, the site shows `LIVE (UNVERIFIED)`). Optional operator guard rails (`"expect": { decimals, tokenProgram, supply }`) block on a difference (`decimals_mismatch`, `token_program_mismatch`, `supply_mismatch`); VIRUS does not set any.
+3. **Activation without restart**: the project (real program, decimals, thresholds scaled by the real decimals, derived `initialSupply`) is registered in PostgreSQL and its indexer + runner start in the running process. Backfill from the beginning (`startSlot 0`) reads **every finalized burn since the creation**, including those that happened before the activation or during the sync; the tail, the supply proof and the level events then work as for any project. After a restart the same path runs again (the stored cursor resumes, nothing is recounted).
+4. **A refusal blocks only this project**: explicit `mint_blocked` log (once per cause), public code in `GET /api/v1/projects` under `pending`, no data served, nothing indexed. It is re-checked every `PENDING_BLOCKED_RETRY_MS` (5 min): an authority revoked later unblocks it by itself.
+
+**Public API**: `GET /api/v1/projects` returns `data` (active projects, unchanged shape) and, only while there is one, `pending: [{ id, name, ticker, cluster, mint, lifecycle: awaiting_mint | validating | activating | blocked, code }]`. Nothing else (no RPC URL, no internal text).
+
+**Site (`engine-bridge.js`)**: `NO TOKEN YET` ("the engine is watching for it and starts by itself") → `ACTIVATING` → `INDEXING` → `LIVE` / `LIVE (UNVERIFIED)`, polled every 10 s, no reload. `TOKEN BLOCKED` (plain reason + one error popup) if refused. LIVE only when the engine reports the project synced. The Windows 98 look, windows, popups, animations and the 7 forms are untouched.
+
+**Before the launch (the only manual part, once)**
+1. `npm run virus:prelaunch` (read-only dry run of the engine's own activation code): today `NOT CREATED` (exit 3). After the first buy it prints the verdict and the project the engine would start.
+2. `npm run check` (with `TEST_DATABASE_URL`), your explicit go to push / merge, then on Replit **Pull + Republish** while the token does not exist yet (same `HELIUS_API_KEY`, `DATABASE_URL`).
+3. `npm run verify:deploy -- https://<app>.replit.app --network mainnet-beta --pending virus --commit <sha> --site-files web/virus`: passes while the engine lists VIRUS as waiting.
+4. Your first buy. The engine detects, validates and activates; `GET /api/v1/projects/virus/status` shows `synced`, the site turns `LIVE`. Nothing to redeploy.
+5. Fill `web/virus/js/config.js` (`token.contract`, BUY / CHART links) only if you want them on the site; this is the one optional post-launch edit and it does not touch the engine (a site-only republish). Publish the CA on X last, copied from Pump.fun.
+6. **Rollback**: remove the entry from `deploy/projects.mainnet.json`, Pull + Republish; stored `virus` rows stay in PostgreSQL (keyed by `project_id`).
 
 Hosting the site elsewhere later (e.g. Netlify) is possible for the counters (`engineBase` + `CORS_ORIGINS`), but the BURN window needs `/rpc` and the wallet module: either keep serving the site from Replit (recommended, no change) or add an exact-origin CORS to `/rpc` and `/dist` first.
 

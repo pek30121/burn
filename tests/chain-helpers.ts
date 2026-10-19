@@ -63,6 +63,14 @@ export const burnIx = (amount: bigint, o: { program?: number; acct?: number; min
   data: burnData(amount),
 });
 
+/** SPL Token MintTo (instruction 7): accounts [mint, destination, authority]. */
+export const mintToIx = (amount: bigint): Ix => {
+  const b = Buffer.alloc(9);
+  b[0] = 7;
+  b.writeBigUInt64LE(amount, 1);
+  return { programIdIndex: K.token, accounts: [K.mint, K.acct, K.auth], data: encodeBase58(Uint8Array.from(b)) };
+};
+
 export const burnCheckedIx = (amount: bigint, decimals: number, o: { program?: number } = {}): Ix => ({
   programIdIndex: o.program ?? K.token,
   accounts: [K.acct, K.mint, K.auth],

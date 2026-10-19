@@ -44,6 +44,12 @@ export class PgStore implements IndexerStore, ApiSource {
     return store;
   }
 
+  /** Registers a project while the engine runs (activation of a project whose mint did not exist at start). Idempotent. */
+  async addProject(p: ProjectConfig): Promise<void> {
+    await this.#syncProject(p);
+    this.#projects.set(p.id, p);
+  }
+
   /* ------------------------- project registration ------------------------- */
 
   async #syncProject(p: ProjectConfig): Promise<void> {

@@ -38,6 +38,8 @@ export interface EngineConfig {
   readonly statusLogIntervalMs: number;
   /** 0 disables. Projects with initialSupply are periodically checked against the on-chain supply. */
   readonly reconcileIntervalMs: number;
+  /** Projects declared with `awaitMint`: how the engine watches for their mint and activates them by itself. */
+  readonly pending: { readonly pollIntervalMs: number; readonly blockedRetryMs: number; readonly maxHistorySignatures: number };
   readonly migrateOnStart: boolean;
   readonly logLevel: LogLevel;
   /** Public read-only HTTP API. `enabled: false` runs the indexers only. */
@@ -120,8 +122,8 @@ export async function loadEngineConfig(env: Env = process.env): Promise<EngineCo
   else {
     try {
       registry = await ProjectRegistry.fromFile(env.PROJECTS_CONFIG);
-      if (registry.list().length === 0) issues.push('PROJECTS_CONFIG: no project configured');
-      const wrong = registry.list().filter((p) => cluster && p.cluster !== cluster).map((p) => p.id);
+      if (registry.list().length + registry.pending().length === 0) issues.push('PROJECTS_CONFIG: no project configured');
+      const wrong = [...registry.list(), ...registry.pending()].filter((p) => cluster && p.cluster !== cluster).map((p) => p.id);
       if (wrong.length) issues.push(`PROJECTS_CONFIG: projects ${wrong.join(', ')} are not on SOLANA_CLUSTER=${cluster}`);
     } catch (e) {
       if (e instanceof ConfigError) issues.push(...e.issues.map((i) => `PROJECTS_CONFIG: ${i}`));
@@ -192,6 +194,11 @@ export async function loadEngineConfig(env: Env = process.env): Promise<EngineCo
     shutdownTimeoutMs: int('SHUTDOWN_TIMEOUT_MS', 20_000, 100, 600_000),
     statusLogIntervalMs: int('STATUS_LOG_INTERVAL_MS', 300_000, 0, 86_400_000),
     reconcileIntervalMs: int('RECONCILE_INTERVAL_MS', 300_000, 0, 86_400_000),
+    pending: {
+      pollIntervalMs: int('PENDING_POLL_INTERVAL_MS', 15_000, 1_000, 3_600_000),
+      blockedRetryMs: int('PENDING_BLOCKED_RETRY_MS', 300_000, 1_000, 86_400_000),
+      maxHistorySignatures: int('PENDING_MAX_HISTORY_SIGNATURES', 1_500, 1, 20_000),
+    },
     migrateOnStart: bool('MIGRATE_ON_START', true),
     rpcMonthlyCredits: int('RPC_MONTHLY_CREDITS', 0, 0, 1_000_000_000_000),
     quotaCheckIntervalMs: int('QUOTA_CHECK_INTERVAL_MS', 60_000, 1_000, 86_400_000),

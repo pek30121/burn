@@ -10,6 +10,8 @@ import { toStoreError } from '../db/errors.ts';
 import { Indexer, type FetchStats, type IndexerStatus } from '../indexer/indexer.ts';
 import { PgStore } from '../indexer/pg-store.ts';
 import type { LevelReachedEvent } from '../core/ledger.ts';
+import type { ProjectConfig } from '../config/schema.ts';
+import type { PublicPending } from '../api/serialize.ts';
 import type { EngineConfig } from './config.ts';
 import { RequestLimiter, ShutdownError } from './limiter.ts';
 import { QuotaMonitor, type QuotaSnapshot } from './quota.ts';
@@ -17,6 +19,7 @@ import { checkMintPrograms, mintProgramProblem } from './mint-check.ts';
 import { jsonSafe, type Logger } from './logger.ts';
 import { meteredFetch, RpcMeter, type MeterSnapshot } from './meter.ts';
 import { ProjectRunner, type RunnerSnapshot } from './runner.ts';
+import { MintWatcher, type WatcherSnapshot } from './activation.ts';
 
 export class EngineStartError extends Error {
   override name = 'EngineStartError';
@@ -44,6 +47,8 @@ export interface EngineStatus {
   state: 'running' | 'stopping' | 'stopped';
   startedAt: string;
   projects: ProjectStatus[];
+  /** Projects declared with `awaitMint` that are not (yet) active: waiting for their mint, or blocked with a public code. */
+  pending: WatcherSnapshot[];
   rpc: MeterSnapshot;
   limiter: { active: number; queued: number };
   /** Present when RPC_MONTHLY_CREDITS is set: consumption vs the provider quota (local estimate). */
@@ -66,7 +71,7 @@ export async function startEngine(cfg: EngineConfig, deps: EngineDeps): Promise<
   const log = deps.log;
   const projects = cfg.registry.list();
   log.info('engine_starting', {
-    cluster: cfg.cluster, projects: projects.map((p) => p.id), pollIntervalMs: cfg.pollIntervalMs,
+    cluster: cfg.cluster, projects: projects.map((p) => p.id), pending: cfg.registry.pending().map((p) => p.id), pollIntervalMs: cfg.pollIntervalMs,
     maxConcurrent: cfg.limits.maxConcurrent, minIntervalMs: cfg.limits.minIntervalMs, trackConfirmed: cfg.indexer.trackConfirmed,
   });
 
@@ -138,7 +143,8 @@ export async function startEngine(cfg: EngineConfig, deps: EngineDeps): Promise<
   // --- one isolated pipeline per project ---
   const runners = new Map<string, ProjectRunner>();
   const indexers = new Map<string, Indexer>();
-  for (const project of projects) {
+  const active: ProjectConfig[] = [...projects]; // grows when a pending project is activated
+  const wire = (project: ProjectConfig): void => {
     const plog = log.child({ project: project.id });
     const rpc = new SolanaRpc({
       url: cfg.rpc.url, maxRetries: cfg.rpc.maxRetries, timeoutMs: cfg.rpc.timeoutMs, baseDelayMs: cfg.rpc.baseDelayMs, sleep,
@@ -165,6 +171,36 @@ export async function startEngine(cfg: EngineConfig, deps: EngineDeps): Promise<
       } : {}),
       reconcileIntervalMs: cfg.reconcileIntervalMs, // also for projects that cannot be proven: the check returns at once, without any RPC call, and records the public reason
     }));
+  };
+  for (const project of projects) wire(project);
+
+  // --- projects whose mint does not exist yet: watched, then activated here, without any restart ---
+  const watchers = new Map<string, MintWatcher>();
+  const running: Promise<void>[] = [];
+  const publicPending = (): PublicPending[] =>
+    cfg.registry.pending().flatMap((p) => {
+      const w = watchers.get(p.id)?.snapshot();
+      if (!w || w.lifecycle === 'active') return [];
+      return [{ id: p.id, name: p.name, ticker: p.ticker, cluster: p.cluster, mint: p.mint, lifecycle: w.lifecycle, code: w.code }];
+    });
+  for (const pending of cfg.registry.pending()) {
+    const plog = log.child({ project: pending.id });
+    const rpc = new SolanaRpc({
+      url: cfg.rpc.url, maxRetries: cfg.rpc.maxRetries, timeoutMs: cfg.rpc.timeoutMs, baseDelayMs: cfg.rpc.baseDelayMs, sleep,
+      fetch: meteredFetch({ base: baseFetch, project: pending.id, meter, limiter }),
+    });
+    watchers.set(pending.id, new MintWatcher({
+      pending, rpc, log: plog, sleep, ...cfg.pending, backoff: cfg.errorBackoff,
+      activate: async (project) => {
+        if (abort.signal.aborted) throw new ShutdownError();
+        await store.addProject(project);
+        active.push(project);
+        wire(project);
+        const s = await indexers.get(project.id)!.status();
+        plog.info('project_started', { project: project.id, mint: project.mint, backfill: s.backfill, totalFinalizedRaw: s.totals.finalizedRaw, burns: s.totals.count, knownIncidents: s.issues.length, activatedAtRuntime: true });
+        running.push(runners.get(project.id)!.run(abort.signal).catch((e) => log.error('runner_crashed', { project: project.id, error: e instanceof Error ? e.message : String(e) })));
+      },
+    }));
   }
 
   const quota = cfg.rpcMonthlyCredits > 0 ? new QuotaMonitor({ monthlyCredits: cfg.rpcMonthlyCredits, meter, log: log.child({ component: 'quota' }) }) : null;
@@ -172,7 +208,8 @@ export async function startEngine(cfg: EngineConfig, deps: EngineDeps): Promise<
   let state: EngineStatus['state'] = 'running';
   const status = async (): Promise<EngineStatus> => ({
     state, startedAt, rpc: meter.snapshot(), limiter: limiter.stats, ...(quota ? { quota: quota.snapshot() } : {}),
-    projects: await Promise.all(projects.map(async (p): Promise<ProjectStatus> => {
+    pending: [...watchers.values()].map((w) => w.snapshot()).filter((w) => w.lifecycle !== 'active'),
+    projects: await Promise.all(active.map(async (p): Promise<ProjectStatus> => {
       const base = { id: p.id, mint: p.mint, runner: runners.get(p.id)!.snapshot(), fetch: indexers.get(p.id)!.fetchStats() };
       try {
         return { ...base, indexer: await indexers.get(p.id)!.status() };
@@ -199,7 +236,7 @@ export async function startEngine(cfg: EngineConfig, deps: EngineDeps): Promise<
   let httpPort: number | null = null;
   if (cfg.http.enabled) {
     api = createApiServer({
-      source: store, projects, config: cfg.http, log: log.child({ component: 'api' }),
+      source: store, projects: active, pending: publicPending, config: cfg.http, log: log.child({ component: 'api' }),
       runtime: { engineState: () => state, runner: (id) => runners.get(id)?.snapshot() ?? null },
     });
     try {
@@ -211,7 +248,8 @@ export async function startEngine(cfg: EngineConfig, deps: EngineDeps): Promise<
     }
   }
 
-  const running = [...runners.entries()].map(([id, r]) => r.run(abort.signal).catch((e) => log.error('runner_crashed', { project: id, error: e instanceof Error ? e.message : String(e) })));
+  for (const [id, r] of runners) running.push(r.run(abort.signal).catch((e) => log.error('runner_crashed', { project: id, error: e instanceof Error ? e.message : String(e) })));
+  for (const [id, w] of watchers) running.push(w.run(abort.signal).catch((e) => log.error('watcher_crashed', { project: id, error: e instanceof Error ? e.message : String(e) })));
   const statusTimer = cfg.statusLogIntervalMs > 0
     ? setInterval(() => void status().then((s) => log.info('engine_status', JSON.parse(jsonSafe(s)))).catch(() => {}), cfg.statusLogIntervalMs)
     : null;
@@ -242,6 +280,6 @@ export async function startEngine(cfg: EngineConfig, deps: EngineDeps): Promise<
       return { clean: drained };
     })());
 
-  log.info('engine_started', { projects: projects.length });
+  log.info('engine_started', { projects: projects.length, pending: watchers.size });
   return { status, stop, stopped, meter, httpPort };
 }

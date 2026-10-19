@@ -61,11 +61,11 @@ test('[tools] GET /build-info: public, no secret; unknown when not provided; the
 
 /* ----------------------------------------- verify-deploy ----------------------------------------- */
 
-async function stack(o: { commit?: string; genesis?: string; withFlapy?: boolean; network?: string } = {}) {
+async function stack(o: { commit?: string; genesis?: string; withFlapy?: boolean; network?: string; pending?: any[] } = {}) {
   const source = new MemoryApiSource(['flapy']);
   source.addBurn('flapy', 1_000_000n);
   const flapy = parseProjectConfig(projectInput({ id: 'flapy', cluster: 'mainnet-beta' }));
-  const api = await startTestApi(source, { projects: o.withFlapy === false ? [parseProjectConfig(projectInput({ id: 'other' }))] : [flapy] });
+  const api = await startTestApi(source, { projects: o.withFlapy === false ? [parseProjectConfig(projectInput({ id: 'other' }))] : [flapy], ...(o.pending ? { pending: () => o.pending! } : {}) });
   const rpc = createServer((req, res) => {
     let b = '';
     req.on('data', (d) => (b += d));
@@ -77,6 +77,19 @@ async function stack(o: { commit?: string; genesis?: string; withFlapy?: boolean
   return { url: `http://127.0.0.1:${(web.address() as { port: number }).port}`, close: async () => { for (const s of [web, rpc]) await new Promise<void>((r) => { s.closeAllConnections(); s.close(() => r()); }); await api.close(); } };
 }
 const failed = (r: { results: { name: string; ok: boolean }[] }) => r.results.filter((x) => !x.ok).map((x) => x.name);
+
+test('[tools] verify-deploy: a project waiting for its mint is healthy; a blocked or unknown one fails', async () => {
+  const waiting = await stack({ pending: [{ id: 'virus', name: 'V', ticker: 'V', cluster: 'mainnet-beta', mint: 'x', lifecycle: 'awaiting_mint', code: null }] });
+  try {
+    const r = await verifyDeploy(waiting.url, { network: 'mainnet-beta', projects: [], pending: ['virus'] });
+    assert.ok(!failed(r).some((n) => n.includes('pending project')), failed(r).join(' | '));
+    assert.ok(r.results.some((x: { name: string; ok: boolean }) => x.name.includes('waiting for its mint') && x.ok));
+  } finally { await waiting.close(); }
+  const blocked = await stack({ pending: [{ id: 'virus', name: 'V', ticker: 'V', cluster: 'mainnet-beta', mint: 'x', lifecycle: 'blocked', code: 'mint_authority_active' }] });
+  try { assert.ok(failed(await verifyDeploy(blocked.url, { network: 'mainnet-beta', projects: [], pending: ['virus'] })).some((n) => n.includes('pending project "virus"'))); } finally { await blocked.close(); }
+  const unknown = await stack();
+  try { assert.ok(failed(await verifyDeploy(unknown.url, { network: 'mainnet-beta', projects: [], pending: ['virus'] })).some((n) => n.includes('pending project "virus"'))); } finally { await unknown.close(); }
+});
 
 test('[tools] verify-deploy: a healthy Mainnet stack passes every check (pages, build, health, API, RPC allowlist, served files)', async () => {
   const s = await stack();

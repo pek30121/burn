@@ -3,28 +3,30 @@
  * project so a burn can never be attributed to two of them. */
 
 import { readFile } from 'node:fs/promises';
-import { ConfigError, parseProjectConfig, type Cluster, type ProjectConfig } from './schema.ts';
+import { ConfigError, isPendingInput, parsePendingProject, parseProjectConfig, type Cluster, type PendingProject, type ProjectConfig } from './schema.ts';
 
 export class ProjectRegistry {
   readonly #byId = new Map<string, ProjectConfig>();
-  readonly #byMint = new Map<string, ProjectConfig>();
+  readonly #byMint = new Map<string, { id: string }>();
+  readonly #pending = new Map<string, PendingProject>();
 
   constructor(inputs: readonly unknown[]) {
     const issues: string[] = [];
     inputs.forEach((input, i) => {
-      let p: ProjectConfig;
+      let p: ProjectConfig | PendingProject;
       try {
-        p = parseProjectConfig(input, `projects[${i}]`);
+        p = isPendingInput(input) ? parsePendingProject(input, `projects[${i}]`) : parseProjectConfig(input, `projects[${i}]`);
       } catch (e) {
         if (e instanceof ConfigError) return void issues.push(...e.issues);
         throw e;
       }
       const mintKey = `${p.cluster}:${p.mint}`;
-      if (this.#byId.has(p.id)) issues.push(`projects[${i}].id: duplicate project id "${p.id}"`);
+      if (this.#byId.has(p.id) || this.#pending.has(p.id)) issues.push(`projects[${i}].id: duplicate project id "${p.id}"`);
       else if (this.#byMint.has(mintKey)) {
         issues.push(`projects[${i}].mint: already used by project "${this.#byMint.get(mintKey)!.id}" on ${p.cluster}`);
       } else {
-        this.#byId.set(p.id, p);
+        if ('levels' in p) this.#byId.set(p.id, p);
+        else this.#pending.set(p.id, p);
         this.#byMint.set(mintKey, p);
       }
     });
@@ -38,8 +40,18 @@ export class ProjectRegistry {
     return new ProjectRegistry(list);
   }
 
+  /** Active projects only (their mint is known to exist: they are what the engine indexes at start). */
   get(id: string): ProjectConfig | undefined {
     return this.#byId.get(id);
+  }
+
+  /** Projects declared with `awaitMint`: watched until their mint exists on-chain, then activated by the engine itself. */
+  pending(): PendingProject[] {
+    return [...this.#pending.values()];
+  }
+
+  getPending(id: string): PendingProject | undefined {
+    return this.#pending.get(id);
   }
 
   require(id: string): ProjectConfig {
@@ -49,7 +61,8 @@ export class ProjectRegistry {
   }
 
   byMint(cluster: Cluster, mint: string): ProjectConfig | undefined {
-    return this.#byMint.get(`${cluster}:${mint}`);
+    const id = this.#byMint.get(`${cluster}:${mint}`)?.id;
+    return id === undefined ? undefined : this.#byId.get(id);
   }
 
   list(): ProjectConfig[] {

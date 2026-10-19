@@ -152,6 +152,79 @@ export function parseProjectConfig(input: unknown, path = 'project'): ProjectCon
   return deepFreeze({ id, name, ticker, cluster, mint, decimals, tokenProgram, initialSupplyRaw, startSlot, levels });
 }
 
+/* ---------------- projects whose mint does not exist yet ---------------- */
+
+/** What the operator may ASSERT about a token that does not exist yet. These are guard rails, never configuration: the real
+ * values are read from the chain at activation and a difference blocks the project (it is never silently accepted). */
+export interface MintExpectation {
+  readonly decimals: number | null;
+  readonly tokenProgram: TokenProgram | null;
+  /** Total ever created, in whole tokens (decimal string). */
+  readonly supply: string | null;
+}
+
+/** A project declared with `"awaitMint": true`: decimals, token program and supply are NOT configurable (they come from the chain). */
+export interface PendingProject {
+  readonly id: string;
+  readonly name: string;
+  readonly ticker: string;
+  readonly cluster: Cluster;
+  readonly mint: string;
+  readonly startSlot: number;
+  readonly expect: MintExpectation;
+  /** The validated entry minus the chain-derived fields; `activateProject` completes it. */
+  readonly template: Readonly<Record<string, unknown>>;
+}
+
+export const isPendingInput = (input: unknown): boolean => isObj(input) && input.awaitMint === true;
+
+export function parsePendingProject(input: unknown, path = 'project'): PendingProject {
+  if (!isObj(input)) throw new ConfigError([`${path}: expected an object`]);
+  const issues: string[] = [];
+  for (const k of ['decimals', 'tokenProgram', 'initialSupply']) {
+    if (input[k] !== undefined) issues.push(`${path}.${k}: not allowed with "awaitMint" (it is read from the chain once the mint exists; use "expect" to assert it)`);
+  }
+  let expect: MintExpectation = { decimals: null, tokenProgram: null, supply: null };
+  if (input.expect !== undefined) {
+    const e = input.expect;
+    if (!isObj(e)) issues.push(`${path}.expect: expected an object`);
+    else {
+      for (const k of Object.keys(e)) if (!['decimals', 'tokenProgram', 'supply'].includes(k)) issues.push(`${path}.expect.${k}: unknown field`);
+      let decimals: number | null = null;
+      if (e.decimals !== undefined) {
+        try { assertDecimals(e.decimals as number); decimals = e.decimals as number; } catch (err) { issues.push(`${path}.expect.decimals: ${(err as Error).message}`); }
+      }
+      let tokenProgram: TokenProgram | null = null;
+      if (e.tokenProgram !== undefined) {
+        if (typeof e.tokenProgram === 'string' && e.tokenProgram in TOKEN_PROGRAMS) tokenProgram = e.tokenProgram as TokenProgram;
+        else issues.push(`${path}.expect.tokenProgram: expected one of ${Object.keys(TOKEN_PROGRAMS).join(', ')}`);
+      }
+      let supply: string | null = null;
+      if (e.supply !== undefined) {
+        if (typeof e.supply === 'string' && /^\d{1,20}(\.\d{1,9})?$/.test(e.supply)) supply = e.supply;
+        else issues.push(`${path}.expect.supply: expected a decimal string in whole tokens, e.g. "1000000000"`);
+      }
+      expect = { decimals, tokenProgram, supply };
+    }
+  }
+  // everything else is validated by the same code as an active project (thresholds are re-parsed with the real decimals at activation)
+  const { awaitMint: _a, expect: _e, ...template } = input;
+  let base: ProjectConfig | null = null;
+  try {
+    base = parseProjectConfig({ ...template, decimals: 9, tokenProgram: 'spl-token' }, path);
+  } catch (err) {
+    if (err instanceof ConfigError) issues.push(...err.issues);
+    else throw err;
+  }
+  if (issues.length || !base) throw new ConfigError(issues);
+  return deepFreeze({ id: base.id, name: base.name, ticker: base.ticker, cluster: base.cluster, mint: base.mint, startSlot: base.startSlot, expect, template });
+}
+
+/** The full project, from the pending entry and what the chain said. Throws ConfigError when the levels do not fit the real decimals. */
+export function activateProject(p: PendingProject, chain: { decimals: number; tokenProgram: TokenProgram; initialSupply: string | null }): ProjectConfig {
+  return parseProjectConfig({ ...p.template, decimals: chain.decimals, tokenProgram: chain.tokenProgram, ...(chain.initialSupply !== null ? { initialSupply: chain.initialSupply } : {}) }, `project "${p.id}"`);
+}
+
 function deepFreeze<T>(o: T): T {
   if (typeof o === 'object' && o !== null && !Object.isFrozen(o)) {
     Object.freeze(o);

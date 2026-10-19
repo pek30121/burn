@@ -3,13 +3,5 @@
   "rpcUrl": "/rpc",
   "engineBase": "",
   "fixedAmountUi": "1",
-  "projects": [
-    {
-      "id": "flapy",
-      "name": "FLAPY",
-      "mint": "GB5RZm2EgoY6MAdepyZaGhqewhP4tmutt5vYdeCLpump",
-      "tokenProgram": "token-2022",
-      "decimals": 6
-    }
-  ]
+  "projects": []
 }

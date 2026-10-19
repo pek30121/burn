@@ -2,7 +2,7 @@
  * getTransaction / getTokenSupply with real paging semantics, commitments and
  * fault injection. Transactions are real-shaped getTransaction responses. */
 import { RpcError, RpcUnsupportedVersionError, type BatchPage, type BatchQuery, type SignatureInfo } from '../src/chain/rpc.ts';
-import { K, baseKeys, burnIx, makeTx, rawData } from './chain-helpers.ts';
+import { K, baseKeys, burnIx, makeTx, mintToIx, rawData } from './chain-helpers.ts';
 import { MINT_A, MINT_B, randomSignature } from './helpers.ts';
 import type { Commitment } from '../src/core/ledger.ts';
 import type { MintInfo } from '../src/wallet/token-info.ts';
@@ -23,6 +23,8 @@ export interface AddOpts {
   burns?: bigint[];
   /** Burn amounts of MINT_B in the same transaction. */
   burnsB?: bigint[];
+  /** MintTo amounts of MINT_A (the creation of the supply), one outer instruction each. */
+  mints?: bigint[];
   err?: unknown;
   response?: unknown;
   /** Counted in the supply but never listed by getSignaturesForAddress. */
@@ -68,7 +70,7 @@ export class FakeChain {
   add(o: AddOpts): string {
     const sig = randomSignature();
     const k = { ...baseKeys(), otherMint: MINT_B };
-    const ixs = [...(o.burns ?? []).map((a) => burnIx(a)), ...(o.burnsB ?? []).map((a) => burnIx(a, { mint: K.otherMint, acct: K.otherAcct }))];
+    const ixs = [...(o.mints ?? []).map((a) => mintToIx(a)), ...(o.burns ?? []).map((a) => burnIx(a)), ...(o.burnsB ?? []).map((a) => burnIx(a, { mint: K.otherMint, acct: K.otherAcct }))];
     if (ixs.length === 0) ixs.push({ programIdIndex: K.fake, accounts: [K.acct, K.mint], data: rawData([1]) }); // touches the mint, no burn
     const response = o.response ?? makeTx(k, { signature: sig, slot: o.slot, instructions: ixs, err: o.err });
     this.txs.push({

@@ -1,18 +1,21 @@
 {
   "projects": [
     {
-      "id": "flapy",
-      "name": "FLAPY",
-      "ticker": "FLAPY",
+      "id": "virus",
+      "name": "VIRUS.EXE",
+      "ticker": "VIRUS",
       "cluster": "mainnet-beta",
-      "mint": "GB5RZm2EgoY6MAdepyZaGhqewhP4tmutt5vYdeCLpump",
-      "decimals": 6,
-      "tokenProgram": "token-2022",
-      "initialSupply": "1000000000",
+      "mint": "EuhDQM4c9TsyytKDDj5PkAxoL2n9zUh9bcE8tdDkpump",
+      "awaitMint": true,
       "startSlot": 0,
       "levels": [
-        { "id": "l0", "name": "Start", "threshold": "0" },
-        { "id": "l1", "name": "Level 1", "threshold": "1000000" }
+        { "id": "dormant", "name": "Dormant File", "threshold": "0" },
+        { "id": "seed", "name": "Glitch Seed", "threshold": "10000" },
+        { "id": "bug", "name": "Bug Form", "threshold": "50000" },
+        { "id": "parasite", "name": "Parasite Form", "threshold": "150000" },
+        { "id": "worm", "name": "Worm Form", "threshold": "400000" },
+        { "id": "overmind", "name": "Overmind", "threshold": "1000000" },
+        { "id": "god", "name": "System God", "threshold": "2500000" }
       ]
     }
   ]
