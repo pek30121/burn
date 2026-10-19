@@ -202,3 +202,44 @@ test('[web] /wallet-test redirects to the page; the engine CORS answer and prefl
     assert.equal((await fetch(`${s.base}/api/v1/projects/flapy/status`, { method: 'POST' })).status, 405);
   } finally { await s.close(); }
 });
+
+test('[web] /virus/ serves the VIRUS.EXE site from the same origin (types, redirect, no escape); "/" and the other routes are unchanged', async () => {
+  const s = await start();
+  try {
+    const r = await fetch(`${s.base}/virus`, { redirect: 'manual' });
+    assert.equal(r.status, 302);
+    assert.equal(r.headers.get('location'), '/virus/');
+    const index = await fetch(`${s.base}/virus/`);
+    assert.equal(index.status, 200);
+    assert.match(index.headers.get('content-type') ?? '', /text\/html/);
+    assert.match(await index.text(), /VIRUS\.EXE/);
+    for (const [path, type] of [['/virus/js/engine-bridge.js', /javascript/], ['/virus/css/burn.css', /css/], ['/virus/assets/token/virus-logo-512.png', /image\/png/]] as const) {
+      const res = await fetch(`${s.base}${path}`);
+      assert.equal(res.status, 200, path);
+      assert.match(res.headers.get('content-type') ?? '', type, path);
+      assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+    }
+    for (const evil of ['/virus/../package.json', '/virus/..%2fpackage.json', '/virus/%2e%2e/%2e%2e/.env', '/virus/js/../../../package.json', '/virus/README.md', '/virus/js/missing.js']) {
+      const res = await fetch(`${s.base}${evil}`);
+      assert.ok(res.status === 404 || res.status === 400, `${evil} -> ${res.status}`);
+      assert.doesNotMatch(await res.text(), /solana-token-engine/);
+    }
+    // existing behaviour untouched
+    assert.match(await (await fetch(`${s.base}/`)).text(), /Burn — page wallet/);
+    assert.equal((await fetch(`${s.base}/wallet-test`, { redirect: 'manual' })).status, 302);
+    assert.equal((await rpc(s.base, { jsonrpc: '2.0', id: 1, method: 'getGenesisHash' })).status, 200);
+    assert.equal((await rpc(s.base, { jsonrpc: '2.0', id: 1, method: 'getProgramAccounts' })).status, 403);
+    assert.equal((await fetch(`${s.base}/api/v1/projects/x/status`)).status, 200);
+  } finally { await s.close(); }
+});
+
+test('[web] the VIRUS site ships no placeholder token: no provisional mint, no live BUY / CHART link, no private key handling', async () => {
+  const { readFileSync, readdirSync, statSync } = await import('node:fs');
+  const walk = (d: string): string[] => readdirSync(d).flatMap((f) => (statSync(`${d}/${f}`).isDirectory() ? walk(`${d}/${f}`) : [`${d}/${f}`]));
+  for (const f of walk('web/virus').filter((x) => /\.(js|html|css)$/.test(x))) {
+    const text = readFileSync(f, 'utf8');
+    assert.doesNotMatch(text, /FMmNZJAzmx9VAuBF6kmR7FM51B8TMcGfhbGXoMtypump/, f);
+    assert.doesNotMatch(text, /GB5RZm2EgoY6MAdepyZaGhqewhP4tmutt5vYdeCLpump/, `${f} must not reuse FLAPY`);
+    assert.doesNotMatch(text, /api-key=|HELIUS_API_KEY|secretKey|privateKey|seed phrase/i, f);
+  }
+});

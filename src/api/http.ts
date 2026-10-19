@@ -228,13 +228,15 @@ export function createApiServer(deps: ApiDeps): ApiServer {
     totals: Awaited<ReturnType<ApiSource['totals']>>;
     reached: Awaited<ReturnType<ApiSource['reachedLevels']>>;
     latest: number;
+    burnCount: number;
   }
   /** Cached per project so that public traffic costs a handful of queries per interval, not per request. */
   const readModel = (p: ProjectConfig): Promise<ReadModel> =>
     cache.get(`rm:${p.id}`, cfg.statusCacheMs, () =>
-      gate.run(async () => ({
-        state: await source.peekState(p.id), totals: await source.totals(p.id), reached: await source.reachedLevels(p.id), latest: await source.latestEventId(p.id),
-      })),
+      gate.run(async () => {
+        const base = { state: await source.peekState(p.id), totals: await source.totals(p.id), reached: await source.reachedLevels(p.id), latest: await source.latestEventId(p.id) };
+        return { ...base, burnCount: await source.finalizedBurnCount(p.id, base.latest) };
+      }),
     ) as Promise<ReadModel>;
 
   async function status(req: IncomingMessage, res: ServerResponse, url: URL, p: ProjectConfig): Promise<void> {
@@ -249,6 +251,7 @@ export function createApiServer(deps: ApiDeps): ApiServer {
       totals: {
         finalizedRaw: rm.totals.finalizedRaw.toString(), finalized: prog.total.ui,
         pendingFinalizationRaw: pending.toString(), pendingFinalization: formatUiAmount(pending, p.decimals),
+        burnCount: rm.burnCount, // FINALIZED burns only (from the durable event log), consistent with latestEventId
       },
       progression: { level: prog.level, nextLevel: prog.nextLevel, levelProgressBps: prog.levelProgressBps, maxed: prog.maxed },
       latestEventId: String(rm.latest),

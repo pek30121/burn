@@ -1,0 +1,20 @@
+/* BURN window: only the rules the new window needs; everything else reuses the existing desktop styles. */
+.burn { display: grid; gap: 8px; color: var(--ui-text); }
+.burn fieldset { margin: 0; padding: 8px 10px 10px; border: 1px solid var(--ui-shadow); box-shadow: 1px 1px var(--ui-light); min-width: 0; }
+.burn legend { padding: 0 4px; font-weight: 600; }
+.burn [hidden] { display: none !important; }
+.burn .screen { padding: 8px 10px; font-size: 18px; line-height: 1.25; }
+.burn .screen.is-bad { color: var(--danger); }
+.burn .screen.is-ok { color: var(--accent); }
+.burn-kv { display: grid; grid-template-columns: 8.5em 1fr; gap: 2px 8px; margin: 6px 0; word-break: break-all; }
+.burn-kv b { font-weight: 600; opacity: .75; }
+.burn-row { display: flex; gap: 6px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
+.burn input[type="text"] {
+  flex: 1 1 8em; min-width: 0; min-height: 34px; padding: 4px 8px; font-size: 16px; /* 16px: no zoom on iPhone */
+  background: #fff; color: #000; border: 0; box-shadow: var(--bevel-in);
+}
+.burn-err { margin: 4px 0 0; min-height: 1.2em; color: #a00000; font-weight: 600; }
+.burn-warn { margin: 6px 0; font-weight: 600; }
+.burn label { display: flex; gap: 6px; align-items: flex-start; margin: 6px 0; }
+.burn a { color: #0000c8; word-break: break-all; }
+@media (max-width: 699px) { .burn .btn { min-height: 44px; } }

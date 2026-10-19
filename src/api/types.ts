@@ -40,6 +40,8 @@ export interface ReachedLevel {
 export interface ApiSource {
   /** Highest event id of the project (0 when none). */
   latestEventId(projectId: string): Promise<number>;
+  /** Number of FINALIZED burns in the event log up to (and including) event `upToEventId`: consistent with `latestEventId`. */
+  finalizedBurnCount(projectId: string, upToEventId: number): Promise<number>;
   /** Events with id > after, ascending, at most `limit`. */
   eventsAfter(projectId: string, after: number, limit: number): Promise<StoredEvent[]>;
   /** Finalized burns, newest first, with id < before (or from the newest when null). */

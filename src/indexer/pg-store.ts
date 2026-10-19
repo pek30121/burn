@@ -313,6 +313,13 @@ export class PgStore implements IndexerStore, ApiSource {
     return r.rows[0] ? num(r.rows[0].event_seq) : 0;
   }
 
+  async finalizedBurnCount(projectId: string, upToEventId: number): Promise<number> {
+    this.#project(projectId);
+    // Burn events enter the log only once finalized (one per burn, enforced by project_events_burn_once).
+    const r = await this.#query("SELECT count(*) AS n FROM project_events WHERE project_id = $1 AND kind = 'burn' AND seq <= $2", [projectId, upToEventId]);
+    return num(r.rows[0].n);
+  }
+
   async eventsAfter(projectId: string, after: number, limit: number): Promise<StoredEvent[]> {
     this.#project(projectId);
     const rows = (await this.#query(

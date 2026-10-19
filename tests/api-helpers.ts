@@ -66,6 +66,10 @@ export class MemoryApiSource implements ApiSource {
     await this.#guard(id);
     return this.events.get(id)!.length;
   }
+  async finalizedBurnCount(id: string, upTo: number) {
+    await this.#guard(id);
+    return this.events.get(id)!.filter((e) => e.type === 'burn' && e.id <= upTo).length;
+  }
   async eventsAfter(id: string, after: number, limit: number) {
     this.calls.after++;
     await this.#guard(id);

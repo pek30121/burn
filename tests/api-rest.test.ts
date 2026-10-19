@@ -88,6 +88,22 @@ test('status: synced / incomplete / degraded are explicit and carry no internal 
   });
 });
 
+test('status exposes burnCount = FINALIZED burns of that project only (never the pending amount, never mutation events)', async () => {
+  await withApi(async ({ src, url }) => {
+    const burnCount = async (id: string) => (await get(`${url}/api/v1/projects/${id}/status`)).json.totals.burnCount;
+    assert.equal(await burnCount('alpha'), 0);
+    src.pending.set('alpha', 999n);
+    assert.equal(await burnCount('alpha'), 0);
+    src.addBurn('alpha', 5n);
+    src.addMutation('alpha', 'l1', 1);
+    src.addBurn('alpha', 6n);
+    assert.equal(await burnCount('alpha'), 2);
+    assert.equal(await burnCount('beta'), 0);
+    const s = (await get(`${url}/api/v1/projects/alpha/status`)).json;
+    assert.equal(s.latestEventId, '3');
+  });
+});
+
 test('status totals and progression use exact decimal strings (no JS number precision loss)', async () => {
   await withApi(async ({ src, url }) => {
     src.addBurn('alpha', ODD);

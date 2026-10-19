@@ -6,6 +6,7 @@
  *                WEB_CLUSTER (devnet by default, or mainnet-beta): the upstream genesis hash must match it, otherwise the
  *                proxy refuses to relay, so the page can never talk to the wrong network.
  *   /wallet-test redirects to / (the same page).
+ *   /virus/      the VIRUS.EXE site (web/virus), same origin as /rpc and /api so it needs no CORS; /virus redirects to /virus/.
  *   /api, /health   reverse proxy (GET) to the engine's public read-only API, so the page needs a single origin.
  *
  * Env: HELIUS_API_KEY or WEB_UPSTREAM_RPC_URL (upstream), ENGINE_URL (default http://127.0.0.1:8787),
@@ -23,7 +24,10 @@ export const RPC_ALLOWLIST = new Set([
   'getFeeForMessage', 'simulateTransaction', 'sendTransaction', 'getSignatureStatuses',
 ]);
 const MAX_BODY = 64 * 1024;
-const TYPES: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json', '.css': 'text/css' };
+const TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json', '.css': 'text/css',
+  '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.webp': 'image/webp',
+};
 /** The `web/` directory: from the sources (scripts/wallet-test/) or from the compiled copy (web/serve-dist/scripts/wallet-test/). */
 const ROOT = [process.env.WEB_ROOT, new URL('../../web/', import.meta.url).pathname, new URL('../../../', import.meta.url).pathname]
   .filter((d): d is string => !!d)
@@ -139,7 +143,9 @@ export function createWebServer(o: WebServerOptions) {
   }
 
   async function staticFile(res: ServerResponse, urlPath: string): Promise<void> {
-    const rel = urlPath === '/' ? '/wallet-test/index.html' : urlPath.startsWith('/dist/') ? urlPath : `/wallet-test${urlPath}`;
+    const rel = urlPath === '/' ? '/wallet-test/index.html'
+      : urlPath === '/virus/' ? '/virus/index.html'
+      : urlPath.startsWith('/dist/') || urlPath.startsWith('/virus/') ? urlPath : `/wallet-test${urlPath}`;
     const file = normalize(join(ROOT, rel));
     if (!file.startsWith(ROOT.endsWith(sep) ? ROOT : ROOT + sep) || !TYPES[extname(file)]) return json(res, 404, { error: 'not found' });
     try {
@@ -158,6 +164,7 @@ export function createWebServer(o: WebServerOptions) {
         const ip = clientIp(req);
         if (url.pathname === '/rpc' || url.pathname.startsWith('/api/')) if (limited(ip)) return json(res, 429, { error: 'rate limited' });
         if (url.pathname === '/rpc') return await rpcProxy(req, res);
+        if (url.pathname === '/virus') { res.writeHead(302, { location: '/virus/' }); return void res.end(); }
         if (url.pathname === '/wallet-test' || url.pathname === '/wallet-test/') { res.writeHead(302, { location: '/' }); return void res.end(); }
         if (url.pathname === '/config.json' && o.config !== undefined) return json(res, 200, o.config);
         if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/health/')) return await engineProxy(req, res, url.pathname + url.search);

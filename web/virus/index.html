@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="en" data-chaos="med" data-motion="full" data-crt="on">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>VIRUS.EXE — burn. mutate. infect.</title>
+  <meta name="description" content="VIRUS.EXE ($VIRUS) on Solana: a pixel virus lives inside a retro desktop. Burned tokens feed it, it mutates, and the system gets infected.">
+  <meta name="theme-color" content="#050806">
+  <meta property="og:title" content="VIRUS.EXE — burn. mutate. infect.">
+  <meta property="og:description" content="A pixel virus lives inside a retro desktop. Burned $VIRUS feeds it. It mutates. The system gets infected.">
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="https://notavirus.tech/assets/token/virus-logo-ticker.png">
+  <meta property="og:url" content="https://notavirus.tech/">
+  <meta name="twitter:card" content="summary">
+  <link rel="apple-touch-icon" href="assets/token/virus-logo-512.png">
+  <link id="favicon" rel="icon" href="data:,">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;600&family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/desktop.css">
+  <link rel="stylesheet" href="css/sections.css">
+  <link rel="stylesheet" href="css/burn.css">
+</head>
+<body class="booting is-loading" data-stage="0">
+  <a class="skip" href="#status">Skip to infection status</a>
+
+  <!-- ============ BOOT (loading state) ============ -->
+  <div id="boot" class="boot" role="status" aria-live="polite" aria-label="Loading VIRUS.EXE">
+    <div class="boot-inner">
+      <div class="boot-logo" aria-hidden="true">VIRUS.EXE</div>
+      <pre class="boot-lines" id="bootLines"></pre>
+      <div class="boot-bar"><i id="bootBar"></i></div>
+      <p class="boot-hint">click or press any key to skip</p>
+    </div>
+  </div>
+
+  <main>
+    <!-- ============ A. HERO: INFECTED DESKTOP ============ -->
+    <section id="desktop" class="desktop" aria-label="Infected desktop">
+      <div class="wallpaper" aria-hidden="true">
+        <div class="wp-logo" data-text="VIRUS.EXE">VIRUS.EXE</div>
+        <div class="wp-tag">BURN <b>→</b> MUTATE <b>→</b> INFECT</div>
+      </div>
+      <canvas id="corruption" class="corruption px" aria-hidden="true"></canvas>
+
+      <nav class="icons" id="icons" aria-label="Desktop icons"></nav>
+
+      <aside class="hud" id="hud" aria-label="Infection monitor">
+        <header class="hud-title">
+          <img class="px" data-icon="virus" alt="">
+          <span>INFECTION MONITOR</span>
+          <span class="src-badge" data-bind="source">—</span>
+        </header>
+        <div class="hud-body">
+          <div class="hud-stage">
+            <span class="lbl">STAGE <b data-bind="stageNum">-</b>/<span data-bind="stageTotal">7</span></span>
+            <strong data-bind="stageName">…</strong>
+          </div>
+          <div class="meter" data-bar="infection" aria-label="Infection level"><i></i><span data-bind="infection">…</span></div>
+          <dl class="hud-stats">
+            <div><dt>Burned</dt><dd><span data-bind="burnedShort">…</span> <small data-bind="ticker">$VIRUS</small></dd></div>
+            <div><dt>Mood</dt><dd data-bind="mood">…</dd></div>
+          </dl>
+          <p class="hud-err">Engine link lost. <button type="button" class="btn btn-sm" data-action="retry">Retry</button></p>
+          <div class="hud-actions">
+            <button type="button" class="btn btn-feed" data-action="feed">
+              <img class="px" data-icon="burnfile" alt="">
+              <span>HOW TO FEED IT</span>
+            </button>
+            <button type="button" class="btn btn-sm hud-more" data-action="open" data-win="sysmon" aria-label="Open System Monitor">More ▸</button>
+          </div>
+        </div>
+      </aside>
+
+      <div class="win-layer" id="winLayer"></div>
+
+      <div id="virus" class="virus">
+        <canvas class="px" width="64" height="64" aria-hidden="true"></canvas>
+        <button type="button" class="virus-hit" aria-label="The virus. Press to poke it."></button>
+        <span class="bubble" aria-hidden="true"></span>
+      </div>
+
+      <canvas id="fx" class="fx" aria-hidden="true"></canvas>
+      <div class="popup-layer" id="popupLayer"></div>
+      <div class="flash" id="flash" aria-hidden="true"></div>
+
+      <button type="button" class="scroll-cue" data-action="scroll-to" data-target="#status">▼ scan system</button>
+
+      <footer class="taskbar">
+        <button type="button" class="btn start-btn" id="startBtn" aria-haspopup="true" aria-expanded="false" aria-controls="startMenu">
+          <img class="px" data-icon="virus" alt=""><span id="startLabel">Start</span>
+        </button>
+        <div class="tasks" id="tasks" aria-label="Open windows"></div>
+        <div class="tray">
+          <button type="button" class="tray-btn tray-pop" id="popupCount" data-action="close-popups" hidden aria-label="Close all popups">✕ <span>0</span></button>
+          <span class="src-badge" data-bind="source">—</span>
+          <button type="button" class="tray-btn tray-inf" data-action="open" data-win="sysmon" aria-label="Infection level — open System Monitor">
+            <i class="tray-dot" aria-hidden="true"></i><span data-bind="infectionInt">…</span>
+          </button>
+          <button type="button" class="tray-btn" id="soundBtn" data-action="toggle-sound" aria-pressed="false" aria-label="Sound off — click to enable">
+            <img class="px" data-icon="mute" alt="">
+          </button>
+          <time id="clock" class="clock">--:--</time>
+        </div>
+      </footer>
+
+      <div class="startmenu" id="startMenu" hidden>
+        <div class="sm-side" aria-hidden="true">VIRUS<b>.EXE</b></div>
+        <ul class="sm-items" role="menu" aria-label="Start menu">
+          <li role="none"><button type="button" role="menuitem" class="sm-item" data-action="open" data-win="explorer"><img class="px" data-icon="computer" alt="">My Computer</button></li>
+          <li role="none"><button type="button" role="menuitem" class="sm-item" data-action="open" data-win="sysmon"><img class="px" data-icon="monitor" alt="">System Monitor</button></li>
+          <li role="none"><button type="button" role="menuitem" class="sm-item" data-action="open" data-win="lab"><img class="px" data-icon="lab" alt="">Mutation Lab</button></li>
+          <li role="none"><button type="button" role="menuitem" class="sm-item" data-action="open" data-win="log"><img class="px" data-icon="log" alt="">virus.log</button></li>
+          <li role="none"><button type="button" role="menuitem" class="sm-item" data-action="open" data-win="quarantine"><img class="px" data-icon="bin" alt="">Quarantine</button></li>
+          <li role="none"><button type="button" role="menuitem" class="sm-item" data-action="open" data-win="token"><img class="px" data-icon="coin" alt="">$VIRUS token</button></li>
+          <li role="none"><button type="button" role="menuitem" class="sm-item" data-action="open" data-win="control"><img class="px" data-icon="settings" alt="">Control Panel</button></li>
+          <li role="separator" class="sm-sep"></li>
+          <li role="none"><button type="button" role="menuitem" class="sm-item" data-action="storm"><img class="px" data-icon="warn" alt="">Popup storm</button></li>
+          <li role="none"><button type="button" role="menuitem" class="sm-item" data-action="toggle-sound"><img class="px" data-icon="speaker" alt=""><span data-sound-label>Sound: OFF</span></button></li>
+          <li role="none"><button type="button" role="menuitem" class="sm-item" data-action="scroll-to" data-target="#status"><img class="px" data-icon="folder" alt="">Scan system ▼</button></li>
+          <li role="separator" class="sm-sep"></li>
+          <li role="none"><button type="button" role="menuitem" class="sm-item" data-action="shutdown"><img class="px" data-icon="error" alt="">Shut Down…</button></li>
+        </ul>
+      </div>
+
+      <div class="crt" aria-hidden="true"></div>
+    </section>
+
+    <!-- ============ PAGE SECTIONS ============ -->
+    <div class="page">
+      <nav class="pagenav" aria-label="Sections">
+        <button type="button" class="btn btn-sm" data-action="scroll-to" data-target="#desktop">▲ Desktop</button>
+        <a href="#status">Status</a>
+        <a href="#lab">Mutation Lab</a>
+        <a href="#log">Event Log</a>
+        <a href="#how">How it works</a>
+        <a href="#token">$VIRUS</a>
+        <span class="src-badge" data-bind="source">—</span>
+      </nav>
+
+      <!-- B. INFECTION STATUS -->
+      <section id="status" class="sec" aria-labelledby="status-h">
+        <div class="sec-win">
+          <header class="win-title"><img class="px" data-icon="monitor" alt=""><h2 id="status-h">C:\VIRUS\INFECTION_STATUS.SYS</h2></header>
+          <p class="err-banner">⚠ ENGINE LINK LOST — showing the last known data. <button type="button" class="btn btn-sm" data-action="retry">Retry</button></p>
+          <div class="sec-body status-grid">
+            <div class="st-hero screen">
+              <canvas class="px st-sprite" width="64" height="64" data-sprite="current" aria-hidden="true"></canvas>
+              <div class="st-hero-txt">
+                <small>MUTATION STAGE <span data-bind="stageNum">-</span>/<span data-bind="stageTotal">7</span></small>
+                <strong data-bind="stageName">…</strong>
+                <span class="st-mood">MOOD: <b data-bind="mood">…</b></span>
+              </div>
+              <button type="button" class="btn btn-sm" data-action="scroll-to" data-target="#lab">View all forms</button>
+            </div>
+
+            <div class="st-meters">
+              <div class="st-block">
+                <div class="st-label"><span>INFECTION LEVEL</span><b data-bind="infection">…</b></div>
+                <div class="meter meter-xl" data-bar="infection" aria-label="Infection level"><i></i></div>
+              </div>
+              <div class="st-block">
+                <div class="st-label"><span>NEXT MUTATION</span><b data-bind="stageProgress">…</b></div>
+                <div class="meter meter-xl meter-alt" data-bar="stage" aria-label="Progress to next mutation"><i></i></div>
+                <p class="st-sub" data-bind="toNext">…</p>
+              </div>
+            </div>
+
+            <div class="st-numbers screen">
+              <div><small>TOTAL BURNED</small><strong class="big" data-bind="burned">…</strong><span data-bind="ticker">$VIRUS</span></div>
+              <div class="st-num-row">
+                <div><small>BURN EVENTS</small><b data-bind="burnCount">…</b></div>
+                <div><small>FEED</small><b data-bind="status">…</b></div>
+              </div>
+              <button type="button" class="btn btn-feed" data-action="feed">
+                <img class="px" data-icon="burnfile" alt="">
+                <span>HOW TO FEED IT</span>
+              </button>
+            </div>
+
+            <div class="st-defrag">
+              <div class="st-label"><span>SYSTEM CORRUPTION MAP</span><span class="legend"><i class="c"></i>clean <i class="i"></i>infected <i class="x"></i>corrupted <i class="f"></i>free</span></div>
+              <div class="defrag" data-defrag data-cells="300" aria-hidden="true"></div>
+            </div>
+
+            <div class="st-recent">
+              <div class="st-label"><span>RECENT INFECTION EVENTS</span><button type="button" class="btn btn-sm" data-action="scroll-to" data-target="#log">Full log</button></div>
+              <ol class="log-list screen" data-feed data-limit="5" aria-live="polite"></ol>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- C. MUTATION LAB -->
+      <section id="lab" class="sec" aria-labelledby="lab-h">
+        <div class="sec-win">
+          <header class="win-title"><img class="px" data-icon="lab" alt=""><h2 id="lab-h">MUTATION_LAB.EXE</h2></header>
+          <div class="sec-body">
+            <p class="sec-intro">Every burn feeds the virus. Cross a threshold and it evolves into its next form. Select a form to inspect it.</p>
+            <div class="lab" data-lab>
+              <ol class="lab-grid"></ol>
+              <div class="lab-inspect screen">
+                <canvas class="px lab-big" width="64" height="64" aria-hidden="true"></canvas>
+                <div class="lab-info">
+                  <small data-li="num"></small>
+                  <h3 data-li="name"></h3>
+                  <p class="lab-status" data-li="status"></p>
+                  <p data-li="blurb"></p>
+                  <ul class="lab-traits" data-li="traits"></ul>
+                  <p class="lab-req" data-li="req"></p>
+                </div>
+              </div>
+            </div>
+            <p class="fine">Form names and burn thresholds are visual configuration (<code>js/config.js</code>).</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- D. EVENT LOG -->
+      <section id="log" class="sec" aria-labelledby="log-h">
+        <div class="sec-win">
+          <header class="win-title"><img class="px" data-icon="log" alt=""><h2 id="log-h">C:\VIRUS\virus.log</h2></header>
+          <div class="sec-body">
+            <div class="log-filters" role="group" aria-label="Filter events">
+              <button type="button" class="btn btn-sm" data-action="log-filter" data-filter="all" data-target="#mainLog" aria-pressed="true">All</button>
+              <button type="button" class="btn btn-sm" data-action="log-filter" data-filter="burn" data-target="#mainLog" aria-pressed="false">Burns</button>
+              <button type="button" class="btn btn-sm" data-action="log-filter" data-filter="mutation" data-target="#mainLog" aria-pressed="false">Mutations</button>
+              <button type="button" class="btn btn-sm" data-action="log-filter" data-filter="system" data-target="#mainLog" aria-pressed="false">System</button>
+            </div>
+            <ol id="mainLog" class="log-list screen log-tall" data-feed data-limit="80"></ol>
+          </div>
+        </div>
+      </section>
+
+      <!-- E. HOW IT WORKS -->
+      <section id="how" class="sec" aria-labelledby="how-h">
+        <div class="sec-win">
+          <header class="win-title"><img class="px" data-icon="txt" alt=""><h2 id="how-h">HOW_IT_WORKS.TXT</h2></header>
+          <div class="sec-body">
+            <ol class="how">
+              <li><img class="px" data-icon="burnfile" alt=""><b>01 BURN</b><p>Holders burn <span data-bind="ticker">$VIRUS</span>. Every burned token is food.</p></li>
+              <li><img class="px" data-icon="virus" alt=""><b>02 FEED</b><p>Each burn gets thrown straight into the virus' mouth. You watch it eat.</p></li>
+              <li><img class="px" data-icon="lab" alt=""><b>03 MUTATE</b><p>Enough food and it evolves. 7 forms, from Dormant File to System God.</p></li>
+              <li><img class="px" data-icon="computer" alt=""><b>04 INFECT</b><p>Every phase corrupts more of the desktop, until full takeover.</p></li>
+            </ol>
+            <p class="how-note">Burns are signed by you in your wallet. The VIRUS.EXE engine counts each finalized burn and this site shows the infection as it happens.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- F. TOKEN / LINKS -->
+      <section id="token" class="sec" aria-labelledby="token-h">
+        <div class="sec-win">
+          <header class="win-title"><img class="px" data-icon="coin" alt=""><h2 id="token-h">$VIRUS.LNK — PROPERTIES</h2></header>
+          <div class="sec-body">
+            <div data-token></div>
+            <p class="fine">Links appear here only once they are official. Anything else claiming to be VIRUS.EXE is not us. Memecoin, no promises, not financial advice.</p>
+          </div>
+        </div>
+      </section>
+
+      <footer class="site-foot">
+        <div class="foot-ctrls" role="group" aria-label="Display settings">
+          <button type="button" class="btn btn-sm" data-action="toggle-sound"><span data-sound-label>Sound: OFF</span></button>
+          <span class="foot-lbl">Chaos:</span>
+          <button type="button" class="btn btn-sm" data-action="set-chaos" data-value="low" data-pressed-setting="chaos:low">Low</button>
+          <button type="button" class="btn btn-sm" data-action="set-chaos" data-value="med" data-pressed-setting="chaos:med">Med</button>
+          <button type="button" class="btn btn-sm" data-action="set-chaos" data-value="high" data-pressed-setting="chaos:high">High</button>
+          <button type="button" class="btn btn-sm" data-action="toggle-motion" data-pressed-setting="motion:reduced">Reduced motion</button>
+        </div>
+        <p>VIRUS.EXE is a memecoin and an art project. It is not real malware and this site doesn't touch your files.</p>
+      </footer>
+    </div>
+  </main>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <!-- ============ WINDOW TEMPLATES ============ -->
+  <template id="tpl-sysmon">
+    <div class="sm-top screen">
+      <canvas class="px" width="64" height="64" data-sprite="current" aria-hidden="true"></canvas>
+      <div>
+        <small>STAGE <span data-bind="stageNum">-</span>/<span data-bind="stageTotal">7</span></small>
+        <strong data-bind="stageName">…</strong>
+        <span>MOOD: <b data-bind="mood">…</b></span>
+      </div>
+    </div>
+    <div class="sm-row"><span>Infection</span><div class="meter" data-bar="infection"><i></i><span data-bind="infection">…</span></div></div>
+    <div class="sm-row"><span>Mutation</span><div class="meter meter-alt" data-bar="stage"><i></i><span data-bind="stageProgress">…</span></div></div>
+    <dl class="sm-stats">
+      <div><dt>Burned</dt><dd><span data-bind="burned">…</span> <span data-bind="ticker"></span></dd></div>
+      <div><dt>Burn events</dt><dd data-bind="burnCount">…</dd></div>
+      <div><dt>Next</dt><dd data-bind="toNext">…</dd></div>
+      <div><dt>Feed</dt><dd><span data-bind="source"></span> · <span data-bind="status"></span></dd></div>
+    </dl>
+    <p class="sm-cap">VIRUS ACTIVITY</p>
+    <canvas class="px sm-graph" width="256" height="64" data-graph aria-hidden="true"></canvas>
+    <table class="procs">
+      <thead><tr><th>Process</th><th>CPU</th><th></th></tr></thead>
+      <tbody>
+        <tr><td>virus.exe</td><td>97%</td><td><button type="button" class="btn btn-sm" data-action="end-task" data-proc="virus.exe">End task</button></td></tr>
+        <tr><td>explorer.exe</td><td>2%</td><td><button type="button" class="btn btn-sm" data-action="end-task" data-proc="explorer.exe">End task</button></td></tr>
+        <tr><td>antivirus.exe</td><td>0%</td><td><button type="button" class="btn btn-sm" data-action="end-task" data-proc="antivirus.exe">End task</button></td></tr>
+      </tbody>
+    </table>
+  </template>
+
+  <template id="tpl-lab">
+    <div class="lab lab-compact" data-lab>
+      <ol class="lab-grid"></ol>
+      <div class="lab-inspect screen">
+        <canvas class="px lab-big" width="64" height="64" aria-hidden="true"></canvas>
+        <div class="lab-info">
+          <small data-li="num"></small>
+          <h3 data-li="name"></h3>
+          <p class="lab-status" data-li="status"></p>
+          <p data-li="blurb"></p>
+          <ul class="lab-traits" data-li="traits"></ul>
+          <p class="lab-req" data-li="req"></p>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <template id="tpl-log">
+    <ol class="log-list screen" data-feed data-limit="60"></ol>
+  </template>
+
+  <template id="tpl-burn">
+    <div class="burn" data-burn>
+      <p class="screen" data-b="state" aria-live="polite">…</p>
+      <fieldset>
+        <legend>1 · Wallet</legend>
+        <div class="win-btns" data-b="wallets"></div>
+        <div class="burn-kv"><b>Account</b><span data-b="account">—</span><b>Balance</b><span><span data-b="balance">—</span> <span data-bind="ticker">$VIRUS</span></span><b>SOL (fees)</b><span data-b="sol">—</span></div>
+        <div class="win-btns"><button type="button" class="btn btn-sm" data-b="disconnect" disabled>Disconnect</button><button type="button" class="btn btn-sm" data-b="refresh" disabled>Refresh</button></div>
+      </fieldset>
+      <fieldset>
+        <legend>2 · Amount to burn</legend>
+        <div class="burn-row"><input type="text" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="amount" data-b="amount" aria-label="Amount to burn" disabled><button type="button" class="btn btn-sm" data-b="max" disabled>MAX</button></div>
+        <p class="burn-err" role="alert" data-b="amountErr"></p>
+        <button type="button" class="btn" data-b="preview" disabled>PREVIEW</button>
+      </fieldset>
+      <fieldset data-b="recap" hidden>
+        <legend>3 · Confirm</legend>
+        <div class="burn-kv" data-b="recapKv"></div>
+        <p class="burn-warn">This burn is PERMANENT. The tokens are destroyed and cannot be recovered.</p>
+        <label><input type="checkbox" data-b="ack"> I understand and want to burn this amount.</label>
+        <button type="button" class="btn btn-feed" data-b="confirm" disabled><img class="px" data-icon="burnfile" alt=""><span>SIGN IN WALLET &amp; BURN</span></button>
+      </fieldset>
+      <fieldset>
+        <legend>Status</legend>
+        <div class="burn-kv"><b>Transaction</b><span data-b="txPhase">—</span><b>Signature</b><span data-b="sig">—</span><b>Engine count</b><span data-b="enginePhase">—</span></div>
+      </fieldset>
+      <p class="burn-err" role="alert" data-b="error"></p>
+      <p class="burn-warn" data-b="help" hidden></p>
+    </div>
+  </template>
+
+  <template id="tpl-readme">
+    <pre class="notepad">VIRUS.EXE — README.txt
+======================
+
+1. BURN     Holders burn $VIRUS tokens. That's the food.
+2. FEED     Every burn is thrown into the virus. You watch it eat.
+3. MUTATE   Enough food and it evolves into its next form (7 forms).
+4. INFECT   Every phase corrupts more of this desktop.
+            Final form = full system takeover.
+
+Burn from the BURN window (your own wallet signs; nothing is automatic).
+The VIRUS.EXE engine counts every finalized burn and this website
+shows the infection as it happens.
+
+Poke the virus. Open some files. Don't open do_not_open.exe.</pre>
+    <div class="win-btns">
+      <button type="button" class="btn" data-action="open" data-win="lab">Open Mutation Lab</button>
+      <button type="button" class="btn" data-action="open" data-win="token">Token info</button>
+    </div>
+  </template>
+
+  <template id="tpl-token">
+    <div data-token></div>
+  </template>
+
+  <template id="tpl-control">
+    <fieldset>
+      <legend>Sound</legend>
+      <label><input type="checkbox" data-setting="sound"> Enable sound effects</label>
+    </fieldset>
+    <fieldset>
+      <legend>Chaos level</legend>
+      <label><input type="radio" name="cp-chaos" value="low" data-setting="chaos"> Low</label>
+      <label><input type="radio" name="cp-chaos" value="med" data-setting="chaos"> Medium</label>
+      <label><input type="radio" name="cp-chaos" value="high" data-setting="chaos"> High (more glitches &amp; popups)</label>
+    </fieldset>
+    <fieldset>
+      <legend>Display</legend>
+      <label><input type="checkbox" data-setting="motion"> Reduced motion</label>
+      <label><input type="checkbox" data-setting="crt"> CRT scanlines</label>
+    </fieldset>
+    <fieldset>
+      <legend>Data source</legend>
+      <p class="cp-src"><b data-bind="source">—</b> · <span data-bind="status"></span><br><span data-bind="sourceDesc"></span></p>
+    </fieldset>
+    <div class="win-btns"><button type="button" class="btn" data-action="reset-settings">Restore defaults</button></div>
+  </template>
+
+  <script src="js/config.js"></script>
+  <script src="js/util.js"></script>
+  <script src="js/settings.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/adapters/source.js"></script>
+  <script src="js/project.js"></script><!-- the single token / engine configuration point -->
+  <script src="js/engine-bridge.js"></script><!-- engine feed: see docs/VIRUS-INTEGRATION.md -->
+  <script src="js/icons.js"></script>
+  <script src="js/sound.js"></script>
+  <script src="js/sprite.js"></script>
+  <script src="js/fx.js"></script>
+  <script src="js/corruption.js"></script>
+  <script src="js/windows.js"></script>
+  <script src="js/popups.js"></script>
+  <script src="js/virus.js"></script>
+  <script src="js/components.js"></script>
+  <script src="js/desktop.js"></script>
+  <script src="js/burn-ui.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>

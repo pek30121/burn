@@ -57,6 +57,24 @@ test('[api-pg] finalized burns and the levels they trigger enter the log in id o
   assert.deepEqual((await store.reachedLevels('alpha')).map((r) => r.levelId), ['l1']);
 });
 
+test('[api-pg] finalizedBurnCount counts FINALIZED burns only: confirmed ones wait, a promotion counts once, replays and the other project never change it', opts, async () => {
+  const { store } = await freshStore([alpha, betaP]);
+  const pendingBurn = burn({ amountRaw: 5n, commitment: 'confirmed' });
+  await store.recordBurn('alpha', pendingBurn);
+  await store.recordBurn('beta', fin({ mint: MINT_B, amountRaw: 7n }));
+  assert.equal(await store.finalizedBurnCount('alpha', await store.latestEventId('alpha')), 0, 'a confirmed burn is not counted');
+  const a = fin({ amountRaw: 100n, slot: 10 });
+  const crossing = fin({ amountRaw: L1, slot: 11 });
+  await store.recordBurn('alpha', a); // event 1
+  await store.recordBurn('alpha', crossing); // events 2 (burn) + 3 (mutation)
+  assert.equal(await store.finalizedBurnCount('alpha', 3), 2, 'mutation events are not burns');
+  assert.equal(await store.finalizedBurnCount('alpha', 1), 1, 'consistent with any event cursor');
+  await store.recordBurn('alpha', { ...pendingBurn, commitment: 'finalized' }); // promotion: event 4
+  for (const b of [a, crossing, { ...pendingBurn, commitment: 'finalized' as const }]) await store.recordBurn('alpha', { ...b });
+  assert.equal(await store.finalizedBurnCount('alpha', await store.latestEventId('alpha')), 3);
+  assert.equal(await store.finalizedBurnCount('beta', await store.latestEventId('beta')), 1);
+});
+
 test('[api-pg] a rolled-back transaction publishes nothing and consumes no id (no gaps)', opts, async () => {
   const { store, ctx } = await freshStore([alpha]);
   await store.recordBurn('alpha', fin({ amountRaw: 1n }));
