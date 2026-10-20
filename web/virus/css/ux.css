@@ -1,0 +1,140 @@
+/* ===== First-visit clarity (UX layer, loaded LAST) =====
+ * What it does: a readable headline + the 4-step flow at the top of the desktop, a clearer HUD (next mutation, burned total, three
+ * primary actions), a friendly "no wallet yet" state in the BURN window, larger text on phones.
+ * What it never touches: the geometry, placement, stacking or animation of windows and popups (frozen by tests/virus-geometry.test.ts),
+ * the sprites and mutations, and any logic. Everything here is positioning of the desktop furniture and paint. */
+
+:root { --mission-h: 0px; }
+
+/* ---------- mission: the 3-second explanation ---------- */
+.mission {
+  position: absolute; z-index: 2;
+  top: 0; left: 0; right: 0;
+  padding: 10px 12px 6px;
+  text-align: center;
+  pointer-events: none;
+}
+.mission-title {
+  margin: 0;
+  font: 15px/1.55 var(--font-pixel);
+  color: #fff;
+  text-shadow: 3px 3px 0 #000, 0 0 14px rgba(57, 255, 20, .35);
+  letter-spacing: .01em;
+}
+.mission-title b { color: var(--accent); font-weight: 400; }
+.mission-title, .mission-sub { text-wrap: balance; }
+.mission-sub {
+  margin: 6px auto 0;
+  max-width: 34ch;
+  font: 21px/1.1 var(--font-term);
+  color: #eafff0;
+  text-shadow: 2px 2px 0 #000;
+}
+.steps {
+  list-style: none; margin: 8px 0 0; padding: 0;
+  display: flex; justify-content: center; align-items: center; flex-wrap: nowrap; gap: 0;
+}
+.steps li {
+  display: flex; align-items: center; gap: 5px;
+  font: 11px/1 var(--font-pixel);
+  color: #fff; text-shadow: 1px 1px 0 #000;
+  background: rgba(0, 0, 0, .5);
+  padding: 5px 6px 5px 5px;
+  box-shadow: inset 0 0 0 2px rgba(57, 255, 20, .55);
+}
+.steps li + li { margin-left: 14px; position: relative; }
+.steps li + li::before {
+  content: '▸'; position: absolute; left: -12px; top: 50%; transform: translateY(-50%);
+  color: var(--accent); font: 12px/1 var(--font-pixel);
+}
+.steps b {
+  display: inline-grid; place-items: center;
+  width: 18px; height: 18px;
+  background: var(--accent); color: #031a05; font-weight: 400; font-size: 11px;
+}
+
+/* the desktop furniture makes room for the headline */
+.icons { top: calc(var(--mission-h) + 4px); }
+
+/* ---------- HUD: next mutation, burned total, three primary actions ---------- */
+.hud-title { font-size: 13px; }
+.hud-stage .lbl { font-size: 14px; }
+.hud-stage strong { font-size: 15px; }
+.hud-next { display: grid; gap: 4px; }
+.meter-next { height: 24px; }
+.hud-next p {
+  margin: 0;
+  font: 17px/1.15 var(--font-term);
+  color: #1b2a1b;
+}
+.hud-next p b { color: #0a6a12; font-weight: 400; }
+.meter-infection { opacity: .85; }
+.hud-stats dt { font-size: 12px; }
+.hud-stats dd { font-size: 24px; }
+
+.cta { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.cta .btn {
+  min-height: 48px;
+  font-weight: 600; font-size: 16px; letter-spacing: .02em;
+  text-align: center;
+}
+.cta-connect {
+  grid-column: 1 / -1;
+  background: color-mix(in srgb, var(--accent) 62%, var(--ui-face));
+  font: 14px/1.1 var(--font-pixel);
+  animation: cta-pulse 2.2s steps(2, end) infinite;
+}
+.cta-connect:hover { background: color-mix(in srgb, var(--accent) 76%, var(--ui-face)); }
+.cta-phantom { background: color-mix(in srgb, #8b6cff 52%, var(--ui-face)); color: #14082e; font-size: 14px; letter-spacing: 0; }
+.cta-phantom:hover { background: color-mix(in srgb, #8b6cff 64%, var(--ui-face)); }
+.cta-phantom[hidden] { display: none; }
+.cta-phantom[hidden] ~ .cta-buy { grid-column: 1 / -1; }
+.cta-buy { flex-direction: column; gap: 2px; background: color-mix(in srgb, #ffc928 70%, var(--ui-face)); color: #2a1d00; }
+.cta-buy:hover { background: color-mix(in srgb, #ffc928 82%, var(--ui-face)); }
+.cta-buy small { font-size: 11px; font-weight: 600; letter-spacing: .08em; }
+.cta-buy.is-soon { background: color-mix(in srgb, #ffc928 38%, var(--ui-face)); color: #5a4a14; text-shadow: none; cursor: not-allowed; }
+.cta-connect { flex-direction: column; gap: 2px; }
+.cta-line { display: inline-flex; align-items: center; gap: 6px; }
+.wallet-note { font: 600 11px/1 var(--font-ui); letter-spacing: .08em; color: #17400f; text-transform: uppercase; }
+.wallet-note::before { content: 'No wallet connected yet'; }
+html[data-wallet="connected"] .wallet-note::before { content: 'Wallet connected'; }
+@keyframes cta-pulse { 50% { box-shadow: var(--bevel-out), 0 0 0 3px var(--accent-glow); } }
+body.is-error .cta-connect, body.is-loading .cta-connect { animation: none; }
+
+/* the previous main button becomes the secondary "how it works" */
+.hud-actions .btn-feed { min-height: 34px; font-size: 14px; animation: none; background: var(--ui-face); }
+
+/* ---------- BURN window: paint only (the window's size and layout are frozen by the geometry test) ---------- */
+.burn .screen.is-ok { box-shadow: inset 0 0 0 2px var(--accent); }
+.burn:not(:has(.screen.is-bad)) .screen { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 70%, #031a05); }
+
+/* ---------- phones ---------- */
+@media (max-width: 699px) {
+  :root { --mission-h: 146px; }
+  .mission-sub { font-size: 19px; max-width: 32ch; }
+  .meter-infection { display: none; }
+  .icon { font-size: 12px; }
+  .hud-title { font-size: 13px; padding: 3px 5px; }
+  .hud-body { gap: 5px; }
+  .hud-stage, .hud-next, .cta { grid-column: 1 / -1; }
+  .cta .btn { min-height: 50px; }
+  .hud-actions .btn-feed { min-height: 38px; }
+}
+/* short phones: keep the virus visible, drop the secondary details first */
+@media (max-width: 699px) and (max-height: 760px) {
+  :root { --mission-h: 92px; }
+  .steps, .meter-infection { display: none; }
+  .mission-title { font-size: 13px; }
+  .mission-sub { font-size: 18px; }
+  .hud-stats { display: none; }
+}
+
+/* ---------- desktop ---------- */
+@media (min-width: 700px) {
+  .mission { left: 118px; right: 338px; top: 12px; }
+  .mission-title { font-size: clamp(16px, 2.1vw, 30px); }
+  .mission-sub { font-size: clamp(22px, 2vw, 30px); max-width: 44ch; }
+  .steps li { font-size: clamp(11px, 1.1vw, 15px); padding: 6px 9px 6px 6px; }
+  .steps b { width: 22px; height: 22px; font-size: 13px; }
+  .hud { width: 310px; }
+}

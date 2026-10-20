@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const GENESIS = { 'mainnet-beta': '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d', devnet: 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG' };
-const SITE_FILES = ['index.html', 'js/config.js', 'js/project.js', 'js/engine-bridge.js', 'js/burn-ui.js'];
+const SITE_FILES = ['index.html', 'js/config.js', 'js/project.js', 'js/engine-bridge.js', 'js/burn-ui.js', 'js/ux.js', 'css/ux.css'];
 
 export async function verifyDeploy(base, o = {}) {
   const origin = base.replace(/\/+$/, '');

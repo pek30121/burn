@@ -22,6 +22,7 @@
   <link rel="stylesheet" href="css/sections.css">
   <link rel="stylesheet" href="css/burn.css">
   <link rel="stylesheet" href="css/win98.css">
+  <link rel="stylesheet" href="css/ux.css">
 </head>
 <body class="booting is-loading" data-stage="0">
   <a class="skip" href="#status">Skip to infection status</a>
@@ -43,6 +44,16 @@
         <div class="wp-logo" data-text="VIRUS.EXE">VIRUS.EXE</div>
         <div class="wp-tag">BURN <b>→</b> MUTATE <b>→</b> INFECT</div>
       </div>
+      <div class="mission" id="mission">
+        <h1 class="mission-title">BURN <b>$VIRUS</b> TO EVOLVE THE VIRUS</h1>
+        <p class="mission-sub">Each burn feeds the virus. Unlock all 7 mutations.</p>
+        <ol class="steps" aria-label="How it works">
+          <li><b>1</b><span>BUY</span></li>
+          <li><b>2</b><span>CONNECT</span></li>
+          <li><b>3</b><span>BURN</span></li>
+          <li><b>4</b><span>EVOLVE</span></li>
+        </ol>
+      </div>
       <canvas id="corruption" class="corruption px" aria-hidden="true"></canvas>
 
       <nav class="icons" id="icons" aria-label="Desktop icons"></nav>
@@ -58,16 +69,28 @@
             <span class="lbl">STAGE <b data-bind="stageNum">-</b>/<span data-bind="stageTotal">7</span></span>
             <strong data-bind="stageName">…</strong>
           </div>
-          <div class="meter" data-bar="infection" aria-label="Infection level"><i></i><span data-bind="infection">…</span></div>
+          <div class="hud-next">
+            <div class="meter meter-next" data-bar="stage" aria-label="Progress to the next mutation"><i></i><span data-bind="stageProgress">…</span></div>
+            <p>NEXT: <b data-bind="toNext">…</b></p>
+          </div>
+          <div class="meter meter-infection" data-bar="infection" aria-label="Infection level"><i></i><span data-bind="infection">…</span></div>
           <dl class="hud-stats">
             <div><dt>Burned</dt><dd><span data-bind="burnedShort">…</span> <small data-bind="ticker">$VIRUS</small></dd></div>
             <div><dt>Mood</dt><dd data-bind="mood">…</dd></div>
           </dl>
+          <div class="cta" id="cta">
+            <button type="button" class="btn cta-connect" data-action="open" data-win="burn">
+              <span class="cta-line"><img class="px" data-icon="coin" alt=""><span>CONNECT WALLET</span></span>
+              <small class="wallet-note" aria-live="polite"></small>
+            </button>
+            <a class="btn cta-phantom" id="ctaPhantom" href="https://phantom.app/" rel="noopener"><span>OPEN IN PHANTOM</span></a>
+            <a class="btn cta-buy" id="ctaBuy" href="#" rel="noopener" aria-disabled="true"><span>BUY $VIRUS</span><small>COMING SOON</small></a>
+          </div>
           <p class="hud-err">Engine link lost. <button type="button" class="btn btn-sm" data-action="retry">Retry</button></p>
           <div class="hud-actions">
             <button type="button" class="btn btn-feed" data-action="feed">
               <img class="px" data-icon="burnfile" alt="">
-              <span>HOW TO FEED IT</span>
+              <span>HOW IT WORKS</span>
             </button>
             <button type="button" class="btn btn-sm hud-more" data-action="open" data-win="sysmon" aria-label="Open System Monitor">More ▸</button>
           </div>
@@ -425,6 +448,7 @@ Poke the virus. Open some files. Don't open do_not_open.exe.</pre>
   <script src="js/components.js"></script>
   <script src="js/desktop.js"></script>
   <script src="js/burn-ui.js"></script>
+  <script src="js/ux.js"></script>
   <script src="js/main.js"></script>
 </body>
 </html>

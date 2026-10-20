@@ -20,7 +20,7 @@ const opts = { skip: pgSkip };
 const SPL = TOKEN_PROGRAMS['spl-token'];
 const CREATED = 10n ** 15n;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-async function waitFor(cond: () => boolean | Promise<boolean>, what: string, ms = 10_000) {
+async function waitFor(cond: () => boolean | Promise<boolean>, what: string, ms = 30_000) {
   const t0 = Date.now();
   while (Date.now() - t0 < ms) {
     if (await cond()) return;

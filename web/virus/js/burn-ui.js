@@ -116,6 +116,7 @@
   function render(s) {
     if (!root || !root.isConnected) { unsubs.forEach((u) => u()); unsubs = []; return; }
     const why = unavailable();
+    document.documentElement.dataset.wallet = s.account ? 'connected' : 'none'; // display only: the HUD button says which of the two it is
     const st = q('state');
     st.classList.toggle('is-bad', !!why || s.status === 'failed');
     st.classList.toggle('is-ok', !why && s.status === 'finalized');
